@@ -24,4 +24,5 @@ const Job = z.object({
 
 export const Config = z.object({
   jobs: z.array(Job).default([]).description('Scheduled jobs.'),
+  runLog: z.string().description('JSON Lines file that gets one line when a run starts and one when it ends (outcome, exit code, duration, output tails), so past runs can be checked later. Directories are created as needed. No file when empty.'),
 })

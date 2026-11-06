@@ -11,10 +11,11 @@ import { JobRunner } from './job.js'
  * @param {Function} options.run - Command runner, see {@link import('./command.js').runCommand}.
  * @param {Function} options.wake - Agent session opener.
  * @param {AbortSignal} [options.signal] - Stops running commands when aborted.
+ * @param {(entry: object) => Promise<void>} [options.record] - Run recorder, see {@link import('./runlog.js').createRunLog}.
  * @param {typeof Cron} [options.CronClass] - Replaceable for tests.
  * @returns {{ runners: Map<string, JobRunner>, stop: () => void }}
  */
-export function startJobs({ jobs, logger, run, wake, signal, CronClass = Cron }) {
+export function startJobs({ jobs, logger, run, wake, signal, record, CronClass = Cron }) {
   const timers = []
   const runners = new Map()
   for (const job of jobs) {
@@ -23,7 +24,7 @@ export function startJobs({ jobs, logger, run, wake, signal, CronClass = Cron })
       logger.error('[%s] duplicate job name; this copy is not scheduled', job.name)
       continue
     }
-    const runner = new JobRunner(job, { run, wake, logger, signal })
+    const runner = new JobRunner(job, { run, wake, logger, signal, record })
     let timer
     let next
     try {

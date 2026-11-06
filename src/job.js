@@ -33,10 +33,12 @@ export class JobRunner {
    * @param {(request: { text: string, title: string, agentPreset?: string, cwd?: string }) => Promise<string>} deps.wake - Opens an agent session; resolves to its id.
    * @param {{ info: Function, warn: Function }} deps.logger
    * @param {AbortSignal} [deps.signal] - Stops a running command when aborted.
+   * @param {(entry: object) => Promise<void>} [deps.record] - Appends a run record (see runlog.js).
    * @param {() => Date} [deps.now]
    */
-  constructor(job, { run, wake, logger, signal, now = () => new Date() }) {
+  constructor(job, { run, wake, logger, signal, record = async () => {}, now = () => new Date() }) {
     this.job = job
+    this.record = record
     this.run = run
     this.wake = wake
     this.logger = logger
@@ -53,61 +55,91 @@ export class JobRunner {
     const { job, logger } = this
     if (this.running) {
       logger.warn('[%s] previous run still going; skipping this tick', job.name)
+      await this.record({ time: this.now().toISOString(), job: job.name, event: 'skipped' })
       return { status: 'skipped' }
     }
     this.running = true
+    const firedAt = this.now()
+    let result
+    let outcome = { status: 'failed' }
+    let thrown
     try {
-      const firedAt = this.now()
       logger.info('[%s] start', job.name)
-      const result = await this.run({
-        command: job.command,
-        cwd: job.cwd || undefined,
-        timeoutMs: (job.timeoutSeconds ?? 0) * 1000,
-        signal: this.signal,
-      })
-      this.logResult(result)
-      if (!result.ok) return { status: 'failed' }
-      if (!isGated(job)) return { status: 'done' }
-
-      const decision = decideWake(result)
-      if (!decision.wake) {
-        logger.info('[%s] not waking agent: %s', job.name, decision.reason)
-        return { status: 'idle' }
-      }
-      const localTime = formatLocalTime(firedAt, job.timeZone || undefined)
-      try {
-        const sessionId = await this.wake({
-          text: buildAgentPrompt({
-            jobName: job.name,
-            prompt: job.agent.prompt,
-            stdout: result.stdout,
-            droppedBytes: result.stdoutDropped,
-            firedAt: localTime,
-          }),
-          title: sessionTitle(job.name, localTime),
-          ...(job.agent.preset ? { agentPreset: job.agent.preset } : {}),
-          ...(job.agent.cwd || job.cwd ? { cwd: job.agent.cwd || job.cwd } : {}),
-        })
-        logger.info('[%s] woke agent in session %s', job.name, sessionId)
-        return { status: 'woke', sessionId }
-      } catch (error) {
-        logger.warn('[%s] could not wake agent: %s', job.name, describeError(error))
-        return { status: 'wake-failed' }
-      }
+      // A start line on its own shows a run that never finished (DSH stopped mid-run).
+      await this.record({ time: firedAt.toISOString(), job: job.name, event: 'start' })
+      outcome = await this.runOnce(firedAt, r => { result = r })
+      return outcome
+    } catch (error) {
+      thrown = describeError(error)
+      throw error
     } finally {
       this.running = false
+      await this.record({
+        time: this.now().toISOString(),
+        job: job.name,
+        event: 'end',
+        status: outcome.status,
+        ...(outcome.sessionId ? { sessionId: outcome.sessionId } : {}),
+        ...(thrown ? { error: thrown } : {}),
+        ...(result ? {
+          outcome: describeOutcome(result, job),
+          exitCode: result.exitCode ?? null,
+          durationMs: result.durationMs,
+          stdoutTail: tail(result.stdout ?? ''),
+          stderrTail: tail(result.stderr ?? ''),
+        } : {}),
+      })
+    }
+  }
+
+  /**
+   * @param {Date} firedAt
+   * @param {(result: import('./command.js').CommandResult) => void} keep - Receives the command result.
+   */
+  async runOnce(firedAt, keep) {
+    const { job, logger } = this
+    const result = await this.run({
+      command: job.command,
+      cwd: job.cwd || undefined,
+      timeoutMs: (job.timeoutSeconds ?? 0) * 1000,
+      signal: this.signal,
+    })
+    keep(result)
+    this.logResult(result)
+    if (!result.ok) return { status: 'failed' }
+    if (!isGated(job)) return { status: 'done' }
+
+    const decision = decideWake(result)
+    if (!decision.wake) {
+      logger.info('[%s] not waking agent: %s', job.name, decision.reason)
+      return { status: 'idle' }
+    }
+    const localTime = formatLocalTime(firedAt, job.timeZone || undefined)
+    try {
+      const sessionId = await this.wake({
+        text: buildAgentPrompt({
+          jobName: job.name,
+          prompt: job.agent.prompt,
+          stdout: result.stdout,
+          droppedBytes: result.stdoutDropped,
+          firedAt: localTime,
+        }),
+        title: sessionTitle(job.name, localTime),
+        ...(job.agent.preset ? { agentPreset: job.agent.preset } : {}),
+        ...(job.agent.cwd || job.cwd ? { cwd: job.agent.cwd || job.cwd } : {}),
+      })
+      logger.info('[%s] woke agent in session %s', job.name, sessionId)
+      return { status: 'woke', sessionId }
+    } catch (error) {
+      logger.warn('[%s] could not wake agent: %s', job.name, describeError(error))
+      return { status: 'wake-failed' }
     }
   }
 
   logResult(result) {
     const { job, logger } = this
     const seconds = (result.durationMs / 1000).toFixed(1)
-    let outcome
-    if (result.error !== undefined) outcome = `error: ${result.error}`
-    else if (result.timedOut) outcome = `timed out after ${job.timeoutSeconds}s`
-    else if (result.aborted) outcome = 'stopped'
-    else if (result.signal) outcome = `killed by ${result.signal}`
-    else outcome = `exit ${result.exitCode}`
+    const outcome = describeOutcome(result, job)
     const log = result.ok ? logger.info : logger.warn
     log.call(logger, '[%s] %s in %ss', job.name, outcome, seconds)
     const out = tail(result.stdout)
@@ -115,6 +147,15 @@ export class JobRunner {
     if (out) log.call(logger, '[%s] stdout: %s', job.name, out)
     if (err) log.call(logger, '[%s] stderr: %s', job.name, err)
   }
+}
+
+/** One-phrase result of a command run, as used in the log and run records. */
+function describeOutcome(result, job) {
+  if (result.error !== undefined) return `error: ${result.error}`
+  if (result.timedOut) return `timed out after ${job.timeoutSeconds}s`
+  if (result.aborted) return 'stopped'
+  if (result.signal) return `killed by ${result.signal}`
+  return `exit ${result.exitCode}`
 }
 
 function tail(text) {
