@@ -66,6 +66,7 @@ Jobs live in the config of the `cron-jobs` row. Add an override to your profile'
 
 - One run of a job at a time: if a tick arrives while the previous run is still going, the tick is skipped and logged.
 - Start, exit status, duration and a short tail of stdout and stderr go to the DSH log under `cron-jobs`. Delivering the output anywhere else is the command's job.
+- Set `runLog` (next to `jobs`) to a file path to also keep that record as JSON Lines: one `start` line per run, one `end` line with `status`, `outcome`, `exitCode`, `durationMs` and the output tails, and a `skipped` line for a skipped tick. A `start` with no `end` means DSH stopped during the run. The file is only appended to; rotate it yourself if it grows.
 - Ticks missed while DSH is down are not caught up; the next tick runs normally.
 - Unloading the plugin (stopping DSH or changing its config) stops the timers and terminates running commands.
 

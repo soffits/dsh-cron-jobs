@@ -7,13 +7,14 @@ import { Config } from './src/config.js'
 import { runCommand } from './src/command.js'
 import { openAgentSession } from './src/session.js'
 import { startJobs } from './src/scheduler.js'
+import { createRunLog } from './src/runlog.js'
 
 export const name = 'dsh-cron-jobs'
 export { Config }
 
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ jobs: import('./src/job.js').Job[] }} config
+ * @param {{ jobs: import('./src/job.js').Job[], runLog?: string }} config
  */
 export function apply(ctx, config) {
   const logger = ctx.logger('cron-jobs')
@@ -26,6 +27,7 @@ export function apply(ctx, config) {
       run: runCommand,
       wake: request => openAgentSession(ctx, request, logger),
       signal: controller.signal,
+      record: createRunLog(config.runLog || undefined, logger),
     })
     return () => {
       scheduled.stop()
