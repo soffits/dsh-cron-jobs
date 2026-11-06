@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Cron jobs",
+    "description": "Runs shell commands on cron schedules without a model, and opens an agent session only when a job's command reports something to do."
+  }
+}

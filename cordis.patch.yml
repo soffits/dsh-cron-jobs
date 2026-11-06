@@ -1,0 +1,7 @@
+# Bundle layer for dsh-cron-jobs. Jobs are configured on this row, either in
+# the profile patch or on the plugin's settings page.
+- insert:
+    - id: cron-jobs
+      name: 'dsh-cron-jobs'
+      config:
+        jobs: []
