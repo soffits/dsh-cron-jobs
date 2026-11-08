@@ -13,12 +13,14 @@ export const MAX_PROMPT_OUTPUT_BYTES = 64 * 1024
  * @param {string} [input.stdout] - The gate command's stdout; omitted for an agent-only job.
  * @param {number} [input.droppedBytes] - Stdout bytes already dropped before `stdout`.
  * @param {string} input.firedAt - Local time of the run, as shown in the session title.
+ * @param {{ via: string, to: string }} [input.delivery] - Where the final answer is delivered, if anywhere.
  * @returns {string}
  */
-export function buildAgentPrompt({ jobName, jobId, prompt, stdout, droppedBytes = 0, firedAt }) {
-  const header = jobId === undefined
+export function buildAgentPrompt({ jobName, jobId, prompt, stdout, droppedBytes = 0, firedAt, delivery }) {
+  const header = (jobId === undefined
     ? `This is a scheduled message from the user, sent by the cron job "${jobName}" (run at ${firedAt}).`
-    : `This is a scheduled message from the user, sent by the scheduled job "${jobName}" (id ${jobId}, run at ${firedAt}).`
+    : `This is a scheduled message from the user, sent by the scheduled job "${jobName}" (id ${jobId}, run at ${firedAt}).`)
+    + (delivery === undefined ? '' : ` Your final answer is delivered ${delivery.to ? `to ${delivery.to} ` : ''}through ${delivery.via}; MEDIA:<path> lines in it are attached as files, and an answer of exactly [SILENT] sends nothing.`)
   if (stdout === undefined) return [header, '', prompt.trim()].join('\n')
   const { text, cut } = tailBytes(stdout.replace(/\s+$/, ''), MAX_PROMPT_OUTPUT_BYTES)
   const omitted = droppedBytes + cut

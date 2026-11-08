@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto'
 import { decideWake } from './wake.js'
+import { commandResultText, describeTarget, messageFromText, resolveDelivery } from './deliver.js'
 import { buildAgentPrompt, formatLocalTime, sessionTitle } from './prompt.js'
 import { HISTORY_TAIL_CHARS } from './history.js'
 
@@ -89,6 +91,7 @@ export function agentSettings(job, defaults = {}) {
  * @property {number} [timeoutSeconds]
  * @property {{ prompt?: string, preset?: string, cwd?: string, sessionId?: string, model?: { provider?: string, model?: string, reasoningEffort?: string }, autoArchive?: boolean, reuseWithinHours?: number }} [agent]
  * @property {{ kind: 'new' } | { kind: 'new_once', sessionId?: string } | { kind: 'session', sessionId: string }} [target] - Where the prompt goes; a new session when omitted.
+ * @property {{ via: string, to?: string } | false} [deliver] - Where the result goes (see deliver.js); the plugin default when omitted, nothing when false.
  */
 export class JobRunner {
   /**
@@ -99,15 +102,19 @@ export class JobRunner {
    * @param {(request: { sessionId: string, text: string, mayUnarchive: boolean, ignoreHold?: boolean }) => Promise<{ queued?: boolean }>} [deps.reuse] - Sends the prompt into an existing session (see session.js deliverToSession); without it every wake opens a new session.
    * @param {(sessionId: string) => Promise<void>} [deps.keepSession] - Saves the session a new_once job opened, so later runs go to it.
    * @param {(sessionId: string, options: { signal?: AbortSignal, isLatest: () => boolean, lock: Function }) => Promise<{ archive: string, note?: string }>} [deps.settle] - Archives a session after its turn (see session.js archiveWhenIdle); without it nothing is archived.
-   * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number }} [deps.defaults] - Plugin-level agent settings.
+   * @param {(target: { via: string, to: string }, message: { text: string, files: string[] }, from: { job: string, sessionId?: string }) => Promise<{ status: 'sent' | 'failed', attempts: number, error?: string }>} [deps.send] - Hands a result to its delivery service (see deliver.js sendMessage); without it nothing is delivered.
+   * @param {(sessionId: string, messageId: string, options: { signal?: AbortSignal }) => Promise<{ pending: true } | { text: string, reason?: string } | { error: string }>} [deps.answer] - Waits for the final answer to a prompt (see session.js waitForAnswer).
+   * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object }} [deps.defaults] - Plugin-level agent settings and the default delivery target.
    * @param {{ info: Function, warn: Function }} deps.logger
    * @param {AbortSignal} [deps.signal] - Stops a running command when aborted.
    * @param {(entry: object) => Promise<void>} [deps.record] - Appends a run record (see runlog.js).
    * @param {{ begin: Function, finish: Function }} [deps.history] - Saved run history (see history.js).
    * @param {() => Date} [deps.now]
    */
-  constructor(job, { run, wake, reuse, keepSession, settle, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
+  constructor(job, { run, wake, reuse, keepSession, settle, send, answer, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
     this.job = job
+    this.send = send
+    this.answer = answer
     this.reuse = reuse
     this.keepSession = keepSession
     this.settle = settle
@@ -116,7 +123,7 @@ export class JobRunner {
     this.latestRun = new Map()
     /** Per-session queue that keeps a delivery and an archive from overlapping. */
     this.locks = new Map()
-    /** Archive waits in progress, for tests and shutdown. */
+    /** Archive and delivery waits in progress, for tests and shutdown. */
     this.settling = new Set()
     this.record = record
     this.history = history
@@ -156,6 +163,7 @@ export class JobRunner {
       await this.record({ time: firedAt.toISOString(), job: job.name, event: 'start', ...(trigger === 'manual' ? { trigger } : {}) })
       runId = await this.history.begin(jobKey(job), { trigger, startedAt: firedAt.toISOString() })
       outcome = await this.runOnce(firedAt, r => { result = r })
+      outcome = await this.deliverResult(outcome, result)
       return outcome
     } catch (error) {
       thrown = describeError(error)
@@ -168,6 +176,7 @@ export class JobRunner {
         event: 'end',
         status: outcome.status,
         ...(outcome.sessionId ? { sessionId: outcome.sessionId } : {}),
+        ...(outcome.delivery ? { delivery: outcome.delivery.status } : {}),
         ...(thrown ? { error: thrown } : {}),
         ...(result ? {
           outcome: describeOutcome(result, job),
@@ -189,6 +198,7 @@ export class JobRunner {
           reuseNote: outcome.reuseNote,
           targeted: outcome.targeted,
           archive: outcome.archive,
+          delivery: outcome.delivery,
           error: thrown ?? outcome.error ?? result?.error,
           ...(result ? {
             outcome: describeOutcome(result, job),
@@ -201,6 +211,105 @@ export class JobRunner {
       this.running = false
       this.current = null
       if (outcome.archive === 'pending' && runId !== undefined) this.watchArchive(outcome.sessionId, runId)
+      if (outcome.delivery?.status === 'pending' && runId !== undefined) this.watchDelivery(outcome.sessionId, runId, outcome.delivery)
+    }
+  }
+
+  /** Where this job's results go, or undefined. */
+  deliveryTarget() {
+    if (this.send === undefined) return undefined
+    return resolveDelivery(this.job, this.defaults.deliver)
+  }
+
+  /**
+   * Deliver what a run produced, and add the delivery state to its outcome.
+   * A command's stdout (or failure note) and a failed wake are sent now; a
+   * woken agent's answer is pending until its turn ends (see watchDelivery).
+   * A gate that decided not to wake, and a run stopped by an unload, send
+   * nothing.
+   */
+  async deliverResult({ messageId, ...outcome }, result) {
+    const target = this.deliveryTarget()
+    if (target === undefined) return outcome
+    const { job } = this
+    const where = { via: target.via, to: target.to }
+    if (outcome.status === 'woke') {
+      if (!messageId || !outcome.sessionId) return outcome
+      return { ...outcome, delivery: { status: 'pending', ...where, messageId } }
+    }
+    let text
+    if (outcome.status === 'wake-failed') text = `⚠️ ${job.name}: could not wake the agent: ${outcome.error}`
+    else if (result !== undefined && !result.aborted && (outcome.status === 'done' || outcome.status === 'failed')) text = commandResultText(job, result)
+    else return outcome
+    const message = messageFromText(text, job.cwd || undefined)
+    if (message === undefined) return { ...outcome, delivery: { status: 'silent', ...where } }
+    return { ...outcome, delivery: await this.deliverMessage(target, message, {}) }
+  }
+
+  /** Send one message and log the result; resolves the run's delivery record. */
+  async deliverMessage(target, message, { sessionId }) {
+    const { job, logger } = this
+    const sent = await this.send(target, message, { job: job.name, ...(sessionId ? { sessionId } : {}) })
+    const where = describeTarget(target)
+    if (sent.status === 'sent') logger.info('[%s] delivered the result to %s', job.name, where)
+    else logger.warn('[%s] result not delivered to %s after %s attempt(s): %s', job.name, where, sent.attempts, sent.error)
+    return {
+      status: sent.status,
+      via: target.via,
+      to: target.to,
+      attempts: sent.attempts,
+      at: this.now().toISOString(),
+      ...(sent.error ? { error: sent.error } : {}),
+    }
+  }
+
+  /**
+   * Wait for the woken agent's final answer in the background, deliver it,
+   * and save the result in the run's history. An empty answer or exactly
+   * [SILENT] sends nothing. Left pending when the plugin unloads, for the next
+   * copy to finish (see resumeDeliveries).
+   */
+  watchDelivery(sessionId, runId, pending) {
+    const { job, logger } = this
+    const target = { via: pending.via, to: pending.to ?? '' }
+    const save = delivery => this.history.update(jobKey(job), runId, { delivery })
+    const logEntry = delivery => this.record({
+      time: this.now().toISOString(), job: job.name, event: 'delivery', sessionId,
+      status: delivery.status, via: target.via, to: target.to, ...(delivery.error ? { error: delivery.error } : {}),
+    })
+    const watch = (async () => {
+      if (this.answer === undefined) return
+      const answer = await this.answer(sessionId, pending.messageId, { signal: this.signal })
+      if ('pending' in answer || this.signal?.aborted) return
+      let delivery
+      if ('error' in answer) {
+        delivery = { status: 'failed', ...target, at: this.now().toISOString(), error: answer.error }
+        logger.warn('[%s] no answer to deliver from session %s: %s', job.name, sessionId, answer.error)
+      } else {
+        const message = messageFromText(answer.text, agentSettings(job, this.defaults).cwd)
+        if (message === undefined) {
+          delivery = { status: 'silent', ...target, at: this.now().toISOString(), ...(answer.reason && answer.reason !== 'completed' ? { error: `turn ended: ${answer.reason}` } : {}) }
+          logger.info('[%s] nothing to deliver from session %s', job.name, sessionId)
+        } else {
+          delivery = await this.deliverMessage(target, message, { sessionId })
+        }
+      }
+      await save(delivery)
+      await logEntry(delivery)
+    })().catch((error) => {
+      logger.warn('[%s] delivery from session %s failed: %s', job.name, sessionId, describeError(error))
+      if (!this.signal?.aborted) return save({ status: 'failed', ...target, at: this.now().toISOString(), error: describeError(error) })
+    }).finally(() => this.settling.delete(watch))
+    this.settling.add(watch)
+    return watch
+  }
+
+  /** After a restart or reload: finish deliveries an earlier copy of the plugin left pending. */
+  async resumeDeliveries() {
+    for (const run of this.history.runs(jobKey(this.job))) {
+      if (run.delivery?.status === 'pending' && run.sessionId && run.delivery.messageId) {
+        this.watchDelivery(run.sessionId, run.id, run.delivery)
+      }
     }
   }
 
@@ -239,14 +348,24 @@ export class JobRunner {
       prompt: job.agent.prompt,
       ...(result ? { stdout: result.stdout, droppedBytes: result.stdoutDropped } : {}),
       firedAt: localTime,
+      delivery: this.deliveryTarget(),
     })
     const target = job.target ?? { kind: 'new' }
-    if (target.kind === 'session') return this.sendToTarget(target.sessionId, text, { mayUnarchive: true })
+    // Lets the answer to this prompt be found once its turn ends.
+    const messageId = randomUUID()
+    const sent = await this.deliverPrompt({ job, target, text, messageId, settings, firedAt, localTime })
+    return sent.status === 'woke' ? { ...sent, messageId } : sent
+  }
+
+  /** Send the prompt to the target session, a reused one, or a new one. */
+  async deliverPrompt({ job, target, text, messageId, settings, firedAt, localTime }) {
+    const { logger } = this
+    if (target.kind === 'session') return this.sendToTarget(target.sessionId, text, { mayUnarchive: true, messageId })
 
     const archive = settings.autoArchive && this.settle !== undefined ? { archive: 'pending' } : {}
     let reuseNote
     if (target.kind === 'new_once' && target.sessionId) {
-      const sent = await this.sendToTarget(target.sessionId, text, { mayUnarchive: settings.autoArchive, archive })
+      const sent = await this.sendToTarget(target.sessionId, text, { mayUnarchive: settings.autoArchive, archive, messageId })
       if (sent.status === 'woke') return sent
       reuseNote = `session ${target.sessionId} not reached: ${sent.error}`
       logger.warn('[%s] %s; opening a new session', job.name, reuseNote)
@@ -255,7 +374,7 @@ export class JobRunner {
     if (previous !== undefined) {
       try {
         const sent = await this.withSessionLock(previous.sessionId, async () => {
-          const delivered = await this.reuse({ sessionId: previous.sessionId, text, mayUnarchive: settings.autoArchive })
+          const delivered = await this.reuse({ sessionId: previous.sessionId, text, messageId, mayUnarchive: settings.autoArchive })
           // Inside the lock, so an earlier run's archive wait sees it was superseded.
           this.latestRun.set(previous.sessionId, null)
           return delivered
@@ -277,6 +396,7 @@ export class JobRunner {
     try {
       const opened = await this.wake({
         text,
+        messageId,
         title: sessionTitle(job.name, localTime),
         ...(job.agent.preset ? { agentPreset: job.agent.preset } : {}),
         ...(agentModel(job) ? { model: agentModel(job) } : {}),
@@ -314,12 +434,12 @@ export class JobRunner {
    * unarchived first when `mayUnarchive` is set.
    * @returns {Promise<object>} The run outcome; `wake-failed` with the reason when not delivered.
    */
-  async sendToTarget(sessionId, text, { mayUnarchive, archive = {} }) {
+  async sendToTarget(sessionId, text, { mayUnarchive, archive = {}, messageId }) {
     const { job, logger } = this
     if (this.reuse === undefined) return { status: 'wake-failed', error: 'this host cannot deliver to existing sessions' }
     try {
       const sent = await this.withSessionLock(sessionId, async () => {
-        const delivered = await this.reuse({ sessionId, text, mayUnarchive, ignoreHold: true })
+        const delivered = await this.reuse({ sessionId, text, messageId, mayUnarchive, ignoreHold: true })
         this.latestRun.set(sessionId, null)
         return delivered
       })

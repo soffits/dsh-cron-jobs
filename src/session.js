@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { finalAnswer } from './deliver.js'
 
 /**
  * Open a new agent session and send it one user message, the same way the
@@ -22,6 +23,7 @@ import { randomUUID } from 'node:crypto'
  * @param {import('@deepseek-ai/cordis').Context} ctx - Plugin context.
  * @param {object} request
  * @param {string} request.text - Message text.
+ * @param {string} [request.messageId] - Id of the message, so its answer can be found later.
  * @param {string} request.title - Session title.
  * @param {string} [request.agentPreset] - Agent preset id; the host default when omitted.
  * @param {string} [request.cwd] - Session directory; the host default when omitted.
@@ -29,7 +31,7 @@ import { randomUUID } from 'node:crypto'
  * @param {{ warn: Function }} logger
  * @returns {Promise<string>} The new session id.
  */
-export async function openAgentSession(ctx, { text, title, agentPreset, cwd, model }, logger) {
+export async function openAgentSession(ctx, { text, messageId, title, agentPreset, cwd, model }, logger) {
   const controller = ctx.get('sessionController')
   const sessions = ctx.get('sessions')
   if (controller === undefined || sessions === undefined) {
@@ -49,7 +51,7 @@ export async function openAgentSession(ctx, { text, title, agentPreset, cwd, mod
     await joinWorkspace(ctx, sessionId, cwd, logger)
     nameSession(ctx, agent, title, logger)
 
-    agent.followup(userMessage(text))
+    agent.followup(userMessage(text, messageId))
     if (!await sessions.flush(agent.session)) {
       throw new Error('session persistence did not acknowledge the message')
     }
@@ -80,12 +82,13 @@ export async function openAgentSession(ctx, { text, title, agentPreset, cwd, mod
  * @param {object} request
  * @param {string} request.sessionId
  * @param {string} request.text
+ * @param {string} [request.messageId] - Id of the message, so its answer can be found later.
  * @param {boolean} [request.mayUnarchive]
  * @param {boolean} [request.ignoreHold] - Deliver even to a pinned session or one a person uses.
  * @returns {Promise<{ sessionId: string, queued: boolean, unarchived: boolean }>}
  *   `queued`: the session was busy and the message waits for its next turn.
  */
-export async function deliverToSession(ctx, { sessionId, text, mayUnarchive = false, ignoreHold = false }) {
+export async function deliverToSession(ctx, { sessionId, text, messageId, mayUnarchive = false, ignoreHold = false }) {
   const controller = ctx.get('sessionController')
   const sessions = ctx.get('sessions')
   if (controller === undefined || sessions === undefined) {
@@ -104,7 +107,7 @@ export async function deliverToSession(ctx, { sessionId, text, mayUnarchive = fa
       await registry.unarchiveSession(sessionId)
     }
     const queued = agent.status !== undefined && agent.status !== 'idle'
-    agent.followup(userMessage(text))
+    agent.followup(userMessage(text, messageId))
     if (!await sessions.flush(agent.session)) {
       throw new Error('session persistence did not acknowledge the message')
     }
@@ -197,6 +200,43 @@ export async function archiveWhenIdle(ctx, sessionId, {
   }
 }
 
+/** Time between checks while a prompt waits for its turn to end. */
+export const ANSWER_RETRY_MS = 5000
+/** Checks before giving up on a prompt that never reaches a finished turn. */
+export const ANSWER_ATTEMPTS = 120
+
+/**
+ * Wait until the turn that a job's prompt started has ended, then return its
+ * final answer (see finalAnswer in deliver.js). Waiting uses the agent's idle
+ * signal; a prompt still queued behind other work, or a turn that has not
+ * started yet, is checked again after the next idle.
+ *
+ * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {string} sessionId
+ * @param {string} messageId - Id of the prompt.
+ * @param {object} [options]
+ * @param {AbortSignal} [options.signal] - Plugin unload: resolves `{ pending: true }`.
+ * @param {number} [options.retryMs]
+ * @param {number} [options.attempts]
+ * @returns {Promise<{ pending: true } | { text: string, reason?: string } | { error: string }>}
+ */
+export async function waitForAnswer(ctx, sessionId, messageId, { signal, retryMs = ANSWER_RETRY_MS, attempts = ANSWER_ATTEMPTS }) {
+  const controller = ctx.get('sessionController')
+  if (controller === undefined) return { error: 'this host cannot read sessions (no sessionController service)' }
+  for (let attempt = 1; ; attempt++) {
+    const resolved = await controller.resolveAgent(sessionId)
+    if ('error' in resolved) return { error: `session not found: ${describe(resolved.error)}` }
+    const { agent } = resolved
+    await agent.whenIdle().catch(() => {})
+    if (signal?.aborted) return { pending: true }
+    const answer = finalAnswer(agent.session?.log ?? [], messageId)
+    if (answer.done) return { text: answer.text ?? '', reason: answer.reason }
+    if (attempt >= attempts) return { error: 'the prompt never reached a finished turn' }
+    await sleep(retryMs, signal)
+    if (signal?.aborted) return { pending: true }
+  }
+}
+
 function sleep(ms, signal) {
   return new Promise((resolve) => {
     const timer = setTimeout(done, ms)
@@ -219,9 +259,9 @@ function describe(error) {
  * A user-role message from a scheduled source. `kind: 'schedule'` makes the
  * Web GUI show it as a scheduled run.
  */
-export function userMessage(text) {
+export function userMessage(text, id = randomUUID()) {
   return deepFreeze({
-    id: randomUUID(),
+    id,
     role: 'user',
     content: [{ type: 'text', text }],
     source: { kind: 'schedule' },

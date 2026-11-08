@@ -6,10 +6,13 @@
  * tools (tools.js), which reach the running scheduler through the
  * `cronJobs` service provided here. The "Cron tasks" Web page (client.js)
  * reads and controls jobs over authenticated routes on DSH's /api channel.
+ * Results are delivered through whichever service a job's delivery target
+ * names, looked up with `ctx.get()` when a result is ready (src/deliver.js).
  */
 import { Config } from './src/config.js'
 import { runCommand } from './src/command.js'
-import { archiveWhenIdle, deliverToSession, openAgentSession } from './src/session.js'
+import { archiveWhenIdle, deliverToSession, openAgentSession, waitForAnswer } from './src/session.js'
+import { sendMessage } from './src/deliver.js'
 import { CronJobs } from './src/controller.js'
 import { createRunLog } from './src/runlog.js'
 import { openHistory } from './src/history.js'
@@ -21,7 +24,7 @@ export { Config }
 
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ jobs: import('./src/job.js').Job[], runLog?: string, historyRecords?: number, defaultAgentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number }} config
+ * @param {{ jobs: import('./src/job.js').Job[], runLog?: string, historyRecords?: number, defaultAgentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: { via?: string, to?: string } }} config
  */
 export function apply(ctx, config) {
   const logger = ctx.logger('cron-jobs')
@@ -48,10 +51,15 @@ export function apply(ctx, config) {
         wake: request => openAgentSession(ctx, request, logger),
         reuse: request => deliverToSession(ctx, request),
         settle: (sessionId, options) => archiveWhenIdle(ctx, sessionId, options),
+        // The channel is found by name at send time, so it may load after
+        // this plugin, reload, or be missing (the run records the failure).
+        send: (target, message, from) => sendMessage({ lookup: name => ctx.get(name), target, message, from, signal: controller.signal }),
+        answer: (sessionId, messageId, options) => waitForAnswer(ctx, sessionId, messageId, options),
         defaults: {
           agentCwd: config.defaultAgentCwd || undefined,
           autoArchive: config.autoArchive ?? true,
           reuseWithinHours: config.reuseWithinHours ?? 0,
+          deliver: config.deliver,
         },
         signal: controller.signal,
         record: createRunLog(config.runLog || undefined, logger),

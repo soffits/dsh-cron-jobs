@@ -24,6 +24,9 @@ const targetSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('session'), sessionId: z.string().min(1) }),
 ])
 
+// Where results go; false sends nothing; omitted uses the plugin default.
+const deliverSchema = z.union([z.literal(false), z.object({ via: z.string().min(1), to: z.string() })])
+
 export const storedJobSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
@@ -35,6 +38,7 @@ export const storedJobSchema = z.object({
   preset: z.string().optional(),
   target: targetSchema,
   timeoutSeconds: z.number().int().min(0).optional(),
+  deliver: deliverSchema.optional(),
   status: z.enum(['active', 'paused', 'ended']),
   // Next run; kept so a run missed while DSH was down happens once at startup.
   scheduledAt: z.string().optional(),

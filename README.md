@@ -8,6 +8,8 @@ DSH's built-in Schedule delivers a prompt to an agent session, so every tick sta
 - A **gated job** runs its command first and wakes an agent only when the output says there is something to do.
 - An **agent job** has no command: every run sends its prompt to an agent, like a scheduled task.
 
+A job's result can be **delivered**: the woken agent's final answer, or a command's output and failures, is handed to another plugin that sends it on, such as a chat bot. This plugin knows no channel itself; any plugin that provides a small `send` method can be one (see [Result delivery](#result-delivery)).
+
 Jobs run on cron expressions, RFC 5545 RRULE schedules, or once at a given time. They come from the plugin config, or an agent creates them from a conversation with the plugin's tools ("remind me here tomorrow at 9", "check this every Monday until January"). A **Cron tasks** page in the Web GUI shows every job and its recent runs, and lets you run a job now, pause it, or delete one an agent created.
 
 ## Install
@@ -43,6 +45,10 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
 ```yaml
 - id: cron-jobs
   config:
+    # Optional: send every job's result here unless the job says otherwise.
+    deliver:
+      via: telegramTopics
+      to: notify
     jobs:
       # Plain job: runs the command, logs the result, nothing else.
       - name: Nightly backup
@@ -53,6 +59,7 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
         timeoutSeconds: 1800
 
       # Gated job: wakes an agent only when the command prints something.
+      # Its agent's final answer goes to the row's deliver target.
       - name: New issues
         cron: '*/15 * * * *'
         command: ./scripts/new-issues.sh
@@ -71,6 +78,7 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
 
       # Agent job: no command, the prompt goes out at every run.
       - name: Weekly review
+        deliver: false   # the answer stays in the session
         rrule: |
           DTSTART;TZID=Europe/Berlin:20260907T090000
           RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20270101T000000Z
@@ -91,6 +99,7 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
 | `cwd` | Working directory of the command. The Host process directory when empty. |
 | `timeoutSeconds` | Stop the command (and everything it started) after this long. Default 3600; `0` means no limit. |
 | `enabled` | `false` keeps the job in the config without scheduling it. Default `true`. |
+| `deliver` | Where the job's result is sent: `{ via: <service name>, to: <address> }`, or `false` for nothing. Unset: the row's `deliver`, except for jobs with `agent.sessionId`, which send nothing. See [Result delivery](#result-delivery). |
 | `agent.prompt` | With a command, makes the job a gated job; without one, an agent job. The prompt sent to the session. |
 | `agent.sessionId` | Send the prompt into this existing session instead of opening a new one. Such a session is never auto-archived. |
 | `agent.preset` | Agent preset of the new session. The Host default when empty. |
@@ -107,14 +116,15 @@ Next to `jobs`, the row also takes:
 | `defaultAgentCwd` | Working directory of woken sessions for jobs without `agent.cwd`. |
 | `autoArchive` | Default for `agent.autoArchive`. Default `true`. |
 | `reuseWithinHours` | Default for `agent.reuseWithinHours`. Default `0`. |
+| `deliver` | Default delivery target, `{ via, to }`, for jobs that do not set `deliver`. Unset: results are not delivered. |
 | `historyRecords` | Runs kept per job for the Cron tasks page. Default 50, at most 1000. |
 | `runLog` | Optional JSON Lines file of run starts and ends, see below. |
 
 ## How runs work
 
 - One run of a job at a time: if a tick arrives while the previous run is still going, the tick is skipped and logged.
-- Start, exit status, duration and a short tail of stdout and stderr go to the DSH log under `cron-jobs`. Delivering the output anywhere else is the command's job.
-- Set `runLog` (next to `jobs`) to a file path to also keep that record as JSON Lines: one `start` line per run, one `end` line with `status`, `outcome`, `exitCode`, `durationMs` and the output tails, and a `skipped` line for a skipped tick. A `start` with no `end` means DSH stopped during the run. The file is only appended to; rotate it yourself if it grows.
+- Start, exit status, duration and a short tail of stdout and stderr go to the DSH log under `cron-jobs`. Sending the result anywhere else is what [Result delivery](#result-delivery) is for.
+- Set `runLog` (next to `jobs`) to a file path to also keep that record as JSON Lines: one `start` line per run, one `end` line with `status`, `outcome`, `exitCode`, `durationMs`, the output tails and the delivery state, a `delivery` line when a woken agent's answer has been delivered (or not), and a `skipped` line for a skipped tick. A `start` with no `end` means DSH stopped during the run. The file is only appended to; rotate it yourself if it grows.
 - Ticks of config jobs missed while DSH is down are not caught up; the next tick runs normally. (Jobs created from a conversation catch up once, see below.)
 - Unloading the plugin (stopping DSH or changing its config) stops the timers and terminates running commands.
 
@@ -139,6 +149,51 @@ With `reuseWithinHours` above 0, a gated job sends its prompt into the session i
 
 Only sessions the plugin opened for that job are candidates. If the previous session no longer exists, cannot be resumed, is pinned or was taken over by a person, a new session is opened and the run notes why. DSH does not run model steps in an archived session, so with auto-archive on, an archived session is unarchived just before the prompt and archived again after its turn; with auto-archive off, an archived session is not reused. Runs that reused a session say so in the run history.
 
+## Result delivery
+
+A job with a delivery target sends its result when a run is over:
+
+- **Agent and gated jobs**: when the woken session's turn ends, its final answer (the text of the last assistant message of the turn the prompt started) is sent. An empty answer, or exactly `[SILENT]`, sends nothing, so a check that found nothing stays quiet. The prompt tells the agent this in one line, so job prompts don't have to.
+- **Command jobs**: non-empty stdout is sent. If the command fails (non-zero exit, timeout, killed, or could not start), a short note is sent instead, after any stdout: `⚠️ <job> failed (exit <code>)` (or `timed out after <n>s`, ...) followed by the last 15 lines of stderr.
+- **Gated jobs** whose command fails send the same failure note, and a wake that fails sends `⚠️ <job>: could not wake the agent: <reason>`. A gate that decides not to wake sends nothing.
+- Lines of the form `MEDIA:<path>` in the result are taken out of the text and sent as files. Relative paths are read from the job's directory (the session directory for agent answers), and `~` is the home directory.
+
+Where results go is decided per job: its own `deliver` (or `false`), otherwise nothing for jobs that post into an existing session (`agent.sessionId`, or the tools' `this_session` / `sessionId`), since the answer is already in that conversation, otherwise the row's `deliver`. A run stopped because DSH is shutting down delivers nothing.
+
+Each run's delivery shows on the Cron tasks page and in the run log: waiting for the answer, sent, nothing to send, or not sent with the reason. The answer of a turn still running when DSH stops is picked up and delivered after the next start.
+
+### Delivery channels
+
+A delivery target is `{ via, to }`: `via` names a DSH service, `to` is an address that service understands (a chat topic, a mailbox, a webhook name; it can be empty). When a result is ready, the plugin looks the service up by name with `ctx.get(via)` and calls:
+
+```js
+await service.send({
+  to,           // string: the target's address
+  text,         // string: the message, may be empty when files are attached
+  files,        // string[]: absolute file paths
+  from: {
+    job,        // string: the job's name
+    sessionId,  // string, agent and gated jobs only: the session that wrote the answer
+  },
+})
+```
+
+The promise resolves when the message is sent and rejects with an `Error` when it is not. A rejected send is tried again twice (after 5 and 30 seconds), as is a service that is not running at that moment (for example while its plugin reloads). Set `retryable: false` on the error to stop the retries for a failure that will not go away, such as an unknown address. The return value is ignored. A send that still fails is recorded in the run's history and the run log; the job itself carries on.
+
+To make a plugin a delivery channel, provide a service with that method:
+
+```js
+export function apply(ctx) {
+  ctx.provide('myChannel', {
+    async send({ to, text, files, from }) {
+      // deliver it, or throw
+    },
+  })
+}
+```
+
+and point a job at it with `deliver: { via: myChannel, to: <address> }`.
+
 ## Schedules
 
 - **cron**: a cron expression, read in the job's time zone.
@@ -153,7 +208,7 @@ The `cron-jobs-tools` row registers four tools. Their names start with `cron_job
 
 | Tool | What it does |
 |---|---|
-| `cron_job_create` | Create a job: a title, a prompt and/or a command, exactly one of `cron`, `rrule` and `at` (with `timeZone` where needed), and where the prompt goes. |
+| `cron_job_create` | Create a job: a title, a prompt and/or a command, exactly one of `cron`, `rrule` and `at` (with `timeZone` where needed), where the prompt goes, and optionally where the result is delivered. |
 | `cron_job_edit` | `update` the given fields, `pause`, `resume` (continues from now), or `delete` a job by id. |
 | `cron_job_list` | Every job, from the config and from tools, with its id, state, schedule, next run, target and last run. |
 | `cron_job_view` | One job's full definition and its five latest runs. |
@@ -166,6 +221,8 @@ Where the prompt goes (`target`):
 - `new_once`: one new session, opened by the first run; every later run posts into it.
 - `this_session`: the session that created the job, for reminders and follow-ups to the conversation. `sessionId` names another existing session instead.
 
+`deliver` takes `<service>:<address>` (such as `telegramTopics:notify`) or `none`; the service must be running when the job is created. Left out, the job uses the row's default target, or delivers nothing when its prompt goes to an existing session. On `cron_job_edit`, an empty `deliver` goes back to the default.
+
 The prompt arrives as a scheduled message from the user, with the job's title and id, so the agent can look the job up or delete it when it is done. A message for an existing session is queued behind a turn that is still running. It is delivered even if the session is pinned or a person is using it, since that is what the job was created for; an archived target session is unarchived first. Target sessions are never auto-archived.
 
 Jobs created with the tools are kept in DSH storage (see below) and survive restarts. Each one remembers its next run, so a run missed while DSH was down happens once when it starts again (only once, however many were missed). If DSH stops in the middle of a run, that run happens again at startup. Jobs from the plugin config cannot be changed with the tools; `cron_job_edit` says so instead.
@@ -177,7 +234,7 @@ A delegated subagent can use the tools, but its own session cannot be a target, 
 The Web GUI gets a **Cron tasks** entry in the sidebar, laid out like DSH's own Automation tasks page:
 
 - The list shows every job with its state (active, paused, off in config, invalid, or ended), its schedule and time zone, the next run, and the result of the last run. Jobs an agent created are marked "Created by an agent". Filter by state or search by name, command or prompt. The page refreshes every few seconds while it is visible.
-- Selecting a job opens its detail. **Settings** shows the job read-only (schedule, what it does, command, directory, time limit, where the prompt goes, and for jobs with a prompt the agent preset, session directory and where it came from, auto-archive, session reuse and prompt; for jobs an agent created, when and from which session). **Runs** lists the saved runs, newest first: start time, what started it (schedule or Run now), duration, exit code or other outcome, the woken session with a link that opens it, whether the session was reused, its archive state, and the tails of stdout and stderr.
+- Selecting a job opens its detail. **Settings** shows the job read-only (schedule, what it does, command, directory, time limit, where the prompt goes, where the result is delivered, and for jobs with a prompt the agent preset, session directory and where it came from, auto-archive, session reuse and prompt; for jobs an agent created, when and from which session). **Runs** lists the saved runs, newest first: start time, what started it (schedule or Run now), duration, exit code or other outcome, the woken session with a link that opens it, whether the session was reused, its archive state, the delivery result, and the tails of stdout and stderr.
 - The pause button pauses or resumes the job's schedule. **Run now** in the `⋯` menu starts one run immediately; it is refused while the job is already running, and it does not move the schedule. **Delete** in the same menu removes a job an agent created, with its run history. A job with a prompt has a footer link to its latest session.
 
 The page does not create or edit jobs: config jobs are edited in the config, the others through the tools.
@@ -195,6 +252,7 @@ All three are kept in DSH's storage domain service under the domain `cron_jobs` 
   "cwd": "/home/me",
   "preset": "default",
   "target": { "kind": "session", "sessionId": "session-0123" },
+  "deliver": { "via": "telegramTopics", "to": "notify" },
   "status": "active",
   "scheduledAt": "2026-11-09T15:00:00.000Z",
   "createdAt": "2026-11-08T17:00:00.000Z",
@@ -203,7 +261,7 @@ All three are kept in DSH's storage domain service under the domain `cron_jobs` 
 }
 ```
 
-`schedule` is `{ "kind": "cron", "expression", "timeZone" }`, `{ "kind": "rrule", "rrule" }` or `{ "kind": "at", "at" }` (a UTC instant); `target` is `{ "kind": "new" }`, `{ "kind": "new_once", "sessionId"? }` or `{ "kind": "session", "sessionId" }`; `status` is `active`, `paused` or `ended`; `command` and `timeoutSeconds` are optional. `scheduledAt` is the next run.
+`schedule` is `{ "kind": "cron", "expression", "timeZone" }`, `{ "kind": "rrule", "rrule" }` or `{ "kind": "at", "at" }` (a UTC instant); `target` is `{ "kind": "new" }`, `{ "kind": "new_once", "sessionId"? }` or `{ "kind": "session", "sessionId" }`; `status` is `active`, `paused` or `ended`; `command`, `timeoutSeconds` and `deliver` (`{ "via", "to" }` or `false`; the default when missing) are optional. `scheduledAt` is the next run.
 
 For run history and pausing:
 
@@ -222,7 +280,7 @@ The page calls the Host with POST requests to `/api/dsh-cron-jobs/<endpoint>` (`
 
 After the command finishes:
 
-1. If it failed (non-zero exit, killed, timed out, or could not start), the failure is logged and no agent is woken.
+1. If it failed (non-zero exit, killed, timed out, or could not start), the failure is logged (and delivered, when the job has a delivery target) and no agent is woken.
 2. If stdout is empty or only whitespace, no agent is woken.
 3. If the last non-empty line of stdout is a JSON object whose `wakeAgent` is exactly `false`, such as `{"wakeAgent": false}`, no agent is woken. This is the gate convention of Hermes Agent cron jobs, so existing gate scripts work unchanged. Any other value, a missing key, or a non-JSON last line wakes.
 4. Otherwise the prompt goes to the job's session, or a new session is opened (or the previous one reused, see Session reuse) with the job's preset, directory and model, titled `<job name> · <YYYY-MM-DD HH:mm>` in the job's time zone, and sent the prompt followed by the command's stdout in a labelled block. The message is marked as a scheduled message, so the Web GUI shows it like a scheduled run.

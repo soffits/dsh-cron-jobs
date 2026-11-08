@@ -123,6 +123,15 @@ window.__ModuleLoader__.load({
       'archive.archived': 'archived',
       'archive.kept': 'not archived',
       'archive.superseded': 'continued by a later run',
+      'field.deliver': 'Result sent to',
+      'field.deliverDefault': '(plugin default)',
+      'field.deliverOff': 'Nothing: turned off for this job',
+      'field.deliverSession': 'Nothing: the answer stays in its session',
+      'field.deliverUnset': 'Nothing',
+      'delivery.pending': 'result: waiting for the answer',
+      'delivery.sent': 'result sent',
+      'delivery.silent': 'nothing to send',
+      'delivery.failed': 'result not sent',
       'runs.empty': 'No runs yet.',
       'runs.retention': 'The last {count} runs of each job are kept.',
       'runs.loadError': 'Could not load runs.',
@@ -245,6 +254,15 @@ window.__ModuleLoader__.load({
       'archive.archived': '已归档',
       'archive.kept': '未归档',
       'archive.superseded': '由后续运行接续',
+      'field.deliver': '结果发送到',
+      'field.deliverDefault': '（插件默认）',
+      'field.deliverOff': '不发送：此任务已关闭',
+      'field.deliverSession': '不发送：回答留在它的会话里',
+      'field.deliverUnset': '不发送',
+      'delivery.pending': '结果：等待回答',
+      'delivery.sent': '结果已发送',
+      'delivery.silent': '无需发送',
+      'delivery.failed': '结果未发送',
       'runs.empty': '还没有运行记录。',
       'runs.retention': '每个任务保留最近 {count} 次运行。',
       'runs.loadError': '无法加载运行记录。',
@@ -457,6 +475,10 @@ window.__ModuleLoader__.load({
       return job.schedule?.text ?? ''
     }
 
+    function deliverText(target) {
+      return target.to ? `${target.via}:${target.to}` : target.via
+    }
+
     function targetText(target, t) {
       if (!target || target.kind === 'new') return t('field.targetNew')
       if (target.kind === 'new_once') return target.sessionId ? t('field.targetNewOnceSession', { id: target.sessionId }) : t('field.targetNewOnce')
@@ -560,6 +582,9 @@ window.__ModuleLoader__.load({
         job.command && h(RuleRow, { key: 'command', label: t('field.command'), stack: true }, h('pre', { className: 'dcj-pre' }, job.command)),
         job.command && h(RuleRow, { key: 'cwd', label: t('field.cwd') }, job.cwd ? h('span', { className: 'dcj-code' }, job.cwd) : t('field.cwdHost')),
         job.command && h(RuleRow, { key: 'timeout', label: t('field.timeout') }, job.timeoutSeconds > 0 ? t('field.timeoutValue', { seconds: job.timeoutSeconds }) : t('field.timeoutNone')),
+        job.deliver && h(RuleRow, { key: 'deliver', label: t('field.deliver') }, job.deliver.via
+          ? h(React.Fragment, null, h('span', { className: 'dcj-code' }, deliverText(job.deliver)), job.deliver.source === 'default' ? ` ${t('field.deliverDefault')}` : null)
+          : t(job.deliver.source === 'off' ? 'field.deliverOff' : job.deliver.source === 'session' ? 'field.deliverSession' : 'field.deliverUnset')),
         job.target && h(RuleRow, { key: 'target', label: t('field.target') }, job.target.sessionId
           ? h('button', { type: 'button', className: 'dcj-linkButton', onClick: () => onOpenSession(job.target.sessionId) }, targetText(job.target, t))
           : targetText(job.target, t)),
@@ -596,7 +621,9 @@ window.__ModuleLoader__.load({
       else if (run.targeted) meta.push(run.queued ? `${t('run.targeted')} (${t('run.queued')})` : t('run.targeted'))
       else if (run.reuseNote) meta.push(t('run.reuseFailed'))
       if (run.archive) meta.push(t(`archive.${run.archive}`) + (run.archiveNote ? `: ${run.archiveNote}` : ''))
-      const hasOutput = Boolean(run.stdoutTail || run.stderrTail || run.error || run.reuseNote)
+      if (run.delivery) meta.push(`${t(`delivery.${run.delivery.status}`)} (${deliverText(run.delivery)})`)
+      const deliveryError = run.delivery?.error ? `${t(`delivery.${run.delivery.status}`)}: ${run.delivery.error}` : undefined
+      const hasOutput = Boolean(run.stdoutTail || run.stderrTail || run.error || run.reuseNote || deliveryError)
       return h('li', { className: cx('dcj-run', bad && 'dcj-runBad') },
         h(IconAlarmClock, { className: 'dcj-runGlyph' }),
         h('div', { className: 'dcj-runBody' },
@@ -613,6 +640,7 @@ window.__ModuleLoader__.load({
             ? h(React.Fragment, null,
               run.error && h('pre', { className: 'dcj-pre' }, run.error),
               run.reuseNote && h('pre', { className: 'dcj-pre' }, run.reuseNote),
+              deliveryError && h('pre', { className: 'dcj-pre' }, deliveryError),
               run.stdoutTail && h(React.Fragment, null, h('div', { className: 'dcj-outLabel' }, t('run.stdout')), h('pre', { className: 'dcj-pre' }, run.stdoutTail)),
               run.stderrTail && h(React.Fragment, null, h('div', { className: 'dcj-outLabel' }, t('run.stderr')), h('pre', { className: 'dcj-pre' }, run.stderrTail)))
             : h('div', { className: 'dcj-runMeta' }, t('run.noOutput')))))

@@ -34,6 +34,18 @@ const runSchema = z.object({
   // archived, kept (see archiveNote), or superseded (a later run reused it).
   archive: z.enum(['pending', 'archived', 'kept', 'superseded']).optional(),
   archiveNote: z.string().optional(),
+  // Result delivery: pending until the woken agent's turn ends, then sent,
+  // silent (nothing to send) or failed (see error).
+  delivery: z.object({
+    status: z.enum(['pending', 'sent', 'silent', 'failed']),
+    via: z.string(),
+    to: z.string(),
+    // The prompt whose answer is delivered; kept while pending, for a restart.
+    messageId: z.string().optional(),
+    attempts: z.number().optional(),
+    at: z.string().optional(),
+    error: z.string().optional(),
+  }).optional(),
   stdoutTail: z.string().optional(),
   stderrTail: z.string().optional(),
   error: z.string().optional(),

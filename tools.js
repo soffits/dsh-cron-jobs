@@ -44,6 +44,7 @@ export function toolSchemas(prefix) {
     },
     sessionId: { type: 'string', description: 'Deliver to this other existing session instead of target.' },
     cwd: { type: 'string', description: 'Working directory of the command and of new sessions; defaults to this session\'s.' },
+    deliver: { type: 'string', description: 'Where each run\'s result is sent: "<service>:<address>", a DSH service that delivers messages and an address it understands (such as telegramTopics:notify), or "none". The result is the agent\'s final answer (exactly [SILENT] sends nothing; MEDIA:<path> lines become attachments), or for a job without a prompt the command\'s stdout and failures. Defaults to the plugin\'s default target, or none when the prompt goes to an existing session.' },
   }
   return {
     create: object({
@@ -67,6 +68,7 @@ export function toolSchemas(prefix) {
       target: { ...fields.target, description: `New target, as in ${prefix}_create.` },
       sessionId: fields.sessionId,
       cwd: { type: 'string', description: 'New working directory of the command and of new sessions.' },
+      deliver: { type: 'string', description: `New delivery target, as in ${prefix}_create; an empty string returns to the default.` },
     }, ['id', 'action']),
     list: object({}, []),
     view: object({ id: { type: 'string', description: 'Job id.' } }, ['id']),
@@ -114,6 +116,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
         cwd: args.cwd || callerCwd(agent),
         preset: callerPreset(agent),
         target: await resolveTarget(ctx, agent, args.target ?? 'new', args.sessionId),
+        ...(args.deliver ? { deliver: parseDeliver(ctx, args.deliver) } : {}),
         createdBy: agent?.session?.id,
       })),
       'Create scheduled job', 'other'),
@@ -121,7 +124,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
       `Update, pause, resume or delete one job created with ${prefix}_create, by id. Jobs from the plugin config are read-only.`,
       async (args, jobs, agent) => {
         const { id, action } = args
-        const changes = ['title', 'prompt', 'command', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd'].filter(key => args[key] !== undefined)
+        const changes = ['title', 'prompt', 'command', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver'].filter(key => args[key] !== undefined)
         if (action !== 'update' && changes.length > 0) return failure('invalid_arguments', `${action} takes only id and action.`)
         if (action === 'delete') return await jobs.remove(id)
         if (action === 'pause' || action === 'resume') {
@@ -140,11 +143,12 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
           cwd: args.cwd,
           ...(scheduleGiven ? { schedule: { cron: args.cron, rrule: args.rrule, at: args.at, timeZone: args.timeZone } } : {}),
           ...(targetGiven ? { target: await resolveTarget(ctx, agent, args.target ?? 'new', args.sessionId) } : {}),
+          ...(args.deliver !== undefined ? { deliver: args.deliver === '' ? null : parseDeliver(ctx, args.deliver) } : {}),
         }))
       },
       'Edit scheduled job', 'other'),
     tool('list',
-      `List every scheduled job, from tools and from the plugin config, with id, title, state, schedule, next run, target and last run. ${prefix}_view shows the prompt, command and recent runs.`,
+      `List every scheduled job, from tools and from the plugin config, with id, title, state, schedule, next run, target, delivery target and last run. ${prefix}_view shows the prompt, command and recent runs.`,
       async (_args, jobs) => ({ jobs: jobs.list().map(job => modelJob(job, { brief: true })) }),
       'List scheduled jobs', 'read'),
     tool('view',
@@ -166,6 +170,23 @@ export function apply(ctx, config = {}) {
   for (const definition of createTools({ prefix: config.prefix || 'cron_job', getJobs: () => ctx.get('cronJobs')?.controller(), ctx })) {
     ctx.tools.register(definition)
   }
+}
+
+/**
+ * A delivery target from the tool's "<service>:<address>" or "none". The
+ * service must be running and able to send, so a typo fails now instead of
+ * at the first run.
+ */
+function parseDeliver(ctx, value) {
+  const raw = value.trim()
+  if (raw.toLowerCase() === 'none') return false
+  const colon = raw.indexOf(':')
+  const via = (colon === -1 ? raw : raw.slice(0, colon)).trim()
+  const to = colon === -1 ? '' : raw.slice(colon + 1).trim()
+  if (!/^[A-Za-z_$][\w$.-]*$/.test(via)) throw codeError('invalid_deliver', `deliver must be "<service>:<address>" or "none", not ${JSON.stringify(value)}.`)
+  const service = ctx?.get?.(via)
+  if (typeof service?.send !== 'function') throw codeError('invalid_deliver', `No running service ${JSON.stringify(via)} can deliver messages.`)
+  return { via, to }
 }
 
 /** Where a job's prompt goes, from the tool's target choice. */
@@ -220,6 +241,7 @@ export function modelJob(job, { brief = false } = {}) {
     schedule: job.schedule?.text ?? null,
     ...(job.nextRunAt ? { nextRunAt: job.nextRunAt, nextRunAtLocal: `${formatLocalTime(new Date(job.nextRunAt), zone)}${zone ? ` ${zone}` : ''}` } : { nextRunAt: null }),
     ...(job.target ? { target: job.target.sessionId ? `${job.target.kind} ${job.target.sessionId}` : job.target.kind } : {}),
+    deliver: job.deliver?.via ? (job.deliver.to ? `${job.deliver.via}:${job.deliver.to}` : job.deliver.via) : 'none',
     ...(brief ? {} : {
       ...(job.agent ? { prompt: job.agent.prompt, preset: job.agent.preset, sessionCwd: job.agent.cwd } : {}),
       ...(job.command ? { command: job.command, cwd: job.cwd } : {}),
@@ -237,6 +259,7 @@ function modelRun(run) {
     status: run.status,
     outcome: run.outcome,
     sessionId: run.sessionId,
+    delivery: run.delivery ? [run.delivery.status, run.delivery.error].filter(Boolean).join(': ') : undefined,
     error: run.error,
     stdoutTail: tail(run.stdoutTail),
     stderrTail: tail(run.stderrTail),

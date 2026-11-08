@@ -2,6 +2,7 @@ import { Cron } from 'croner'
 import { JobRunner, agentModel, agentSettings, isGated, jobKind } from './job.js'
 import { ScheduleError, ScheduleTimer, describeSchedule, parseSchedule, scheduleFromInput } from './schedule.js'
 import { JobStore } from './store.js'
+import { deliveryTarget, resolveDelivery } from './deliver.js'
 
 /** Longest job title accepted from the tools. */
 export const MAX_TITLE_LENGTH = 200
@@ -53,7 +54,9 @@ export class CronJobs {
    * @param {Function} options.wake - Agent session opener.
    * @param {Function} [options.reuse] - Sends a prompt into an existing session.
    * @param {Function} [options.settle] - Archives a session after its turn.
-   * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number }} [options.defaults] - Plugin-level agent settings.
+   * @param {Function} [options.send] - Hands a result to its delivery service (see deliver.js sendMessage).
+   * @param {Function} [options.answer] - Waits for a woken agent's final answer (see session.js waitForAnswer).
+   * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object }} [options.defaults] - Plugin-level agent settings and default delivery target.
    * @param {AbortSignal} [options.signal] - Stops running commands when aborted.
    * @param {(entry: object) => Promise<void>} [options.record] - Run log, see runlog.js.
    * @param {import('./history.js').HistoryStore} [options.history] - Saved runs, pause state and stored jobs.
@@ -61,7 +64,7 @@ export class CronJobs {
    * @param {typeof ScheduleTimer} [options.TimerClass] - Replaceable for tests.
    * @param {() => Date} [options.now]
    */
-  constructor({ jobs, logger, run, wake, reuse, settle, defaults = {}, signal, record, history, CronClass = Cron, TimerClass = ScheduleTimer, now = () => new Date() }) {
+  constructor({ jobs, logger, run, wake, reuse, settle, send, answer, defaults = {}, signal, record, history, CronClass = Cron, TimerClass = ScheduleTimer, now = () => new Date() }) {
     this.logger = logger
     this.defaults = defaults
     this.history = history
@@ -69,7 +72,7 @@ export class CronJobs {
     this.CronClass = CronClass
     this.TimerClass = TimerClass
     this.now = now
-    this.deps = { run, wake, reuse, settle, defaults, logger, signal, record, history, now }
+    this.deps = { run, wake, reuse, settle, send, answer, defaults, logger, signal, record, history, now }
     /** @type {Map<string, { job: object, runner: JobRunner, spec?: object, record?: object, timer?: any, error?: string }>} */
     this.entries = new Map()
     this.inflight = new Set()
@@ -105,6 +108,8 @@ export class CronJobs {
     for (const entry of this.entries.values()) {
       // Archives an earlier copy of the plugin left waiting on a running turn.
       entry.runner.resumeArchives().catch(error => this.logger.warn('[%s] pending archives not resumed: %s', entry.job.name, String(error)))
+      // Answers an earlier copy was still waiting for.
+      entry.runner.resumeDeliveries().catch(error => this.logger.warn('[%s] pending deliveries not resumed: %s', entry.job.name, String(error)))
     }
     for (const entry of this.entries.values()) this.arm(entry)
     return this
@@ -291,6 +296,7 @@ export class CronJobs {
    * @param {string} [input.cwd]
    * @param {string} [input.preset]
    * @param {{ kind: 'new' } | { kind: 'new_once' } | { kind: 'session', sessionId: string }} input.target
+   * @param {{ via: string, to: string } | false} [input.deliver] - Where results go; the plugin default when omitted.
    * @param {string} [input.createdBy]
    * @returns {Promise<object>} The job's view.
    * @throws {JobInputError | ScheduleError}
@@ -308,6 +314,7 @@ export class CronJobs {
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(input.preset ? { preset: input.preset } : {}),
       target: input.target ?? { kind: 'new' },
+      ...(deliveryTarget(input.deliver) !== undefined ? { deliver: deliveryTarget(input.deliver) } : {}),
       status: 'active',
       scheduledAt: firstRun(spec, now),
       createdAt: now.toISOString(),
@@ -329,7 +336,7 @@ export class CronJobs {
    * starts from the present and reactivates an ended job; a paused job stays
    * paused.
    * @param {string} id
-   * @param {{ title?: string, prompt?: string, command?: string, schedule?: { cron?: string, rrule?: string, at?: string, timeZone?: string }, cwd?: string, preset?: string, target?: object }} patch
+   * @param {{ title?: string, prompt?: string, command?: string, schedule?: { cron?: string, rrule?: string, at?: string, timeZone?: string }, cwd?: string, preset?: string, target?: object, deliver?: object | false | null }} patch - `deliver: null` goes back to the plugin default.
    * @returns {Promise<object>} The job's view.
    */
   async update(id, patch) {
@@ -346,6 +353,7 @@ export class CronJobs {
     if (patch.cwd !== undefined) next.cwd = patch.cwd || undefined
     if (patch.preset !== undefined) next.preset = patch.preset || undefined
     if (patch.target !== undefined) next.target = patch.target
+    if (patch.deliver !== undefined) next.deliver = deliveryTarget(patch.deliver)
     if (patch.schedule !== undefined) {
       next.schedule = changedSchedule(current.schedule, patch.schedule)
       next.scheduledAt = firstRun(next.schedule, now)
@@ -415,6 +423,7 @@ export class CronJobs {
       gated,
       agent: gated ? agentView(job, this.defaults) : null,
       target: gated ? targetView(job) : null,
+      deliver: deliverView(job, entry.runner.deliveryTarget(), this.defaults),
       nextRunAt: next ? next.toISOString() : null,
       running: runner.current,
       lastRun: this.history?.lastRun(job.id) ?? null,
@@ -480,6 +489,7 @@ function fromStored(record) {
     timeZone: scheduleZone(record.schedule),
     ...(record.prompt ? { agent: { prompt: record.prompt, ...(record.preset ? { preset: record.preset } : {}), ...(record.cwd ? { cwd: record.cwd } : {}) } } : {}),
     target: record.target,
+    ...(record.deliver !== undefined ? { deliver: record.deliver } : {}),
     spec: record.schedule,
   }
 }
@@ -542,6 +552,19 @@ function agentView(job, defaults) {
     autoArchive: target === 'session' ? false : settings.autoArchive,
     reuseWithinHours: target === 'new' ? settings.reuseWithinHours : 0,
   }
+}
+
+/**
+ * Where a job's results go, for the page and the tools: the target and where
+ * it came from (`job` or the plugin `default`), or why nothing is sent
+ * (`off`: the job turns it off; `session`: it posts into an existing session;
+ * `unset`: no target anywhere).
+ */
+function deliverView(job, target, defaults) {
+  if (target !== undefined) return { via: target.via, to: target.to, source: deliveryTarget(job.deliver) ? 'job' : 'default' }
+  if (job.deliver === false) return { via: null, to: null, source: 'off' }
+  if (job.target?.kind === 'session' && resolveDelivery({}, defaults.deliver)) return { via: null, to: null, source: 'session' }
+  return { via: null, to: null, source: 'unset' }
 }
 
 function targetView(job) {

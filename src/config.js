@@ -10,6 +10,11 @@ const Model = z.object({
   reasoningEffort: z.string().description('Reasoning effort id for that model. The model\'s default when empty.'),
 }).description('Model of the new session. Used only when both provider and model are set; otherwise the preset or host default applies.')
 
+const DeliveryTarget = z.object({
+  via: z.string().description('Name of the DSH service that sends results, such as telegramTopics; it must have a send({ to, text, files, from }) method. Empty: no delivery.'),
+  to: z.string().description('Address the service understands, such as a topic name or a chat id.'),
+})
+
 const Agent = z.object({
   prompt: z.string().role('textarea')
     .description('Prompt sent to an agent session when the command asks for it, or at every run of a job without a command. Leave empty for a plain job.'),
@@ -32,6 +37,7 @@ const Job = z.object({
   timeoutSeconds: z.natural().default(DEFAULT_TIMEOUT_SECONDS)
     .description('Stop the command after this many seconds. 0 means no limit.'),
   enabled: z.boolean().default(true).description('Run this job on schedule.'),
+  deliver: z.union([z.const(false), DeliveryTarget]).description('Where the job\'s result is sent: the woken agent\'s final answer, or the command\'s output and failures. false sends nothing. Unset: the plugin\'s deliver, except for jobs with agent.sessionId, which send nothing.'),
   agent: Agent,
 })
 
@@ -40,6 +46,7 @@ export const Config = z.object({
   defaultAgentCwd: z.string().description('Working directory of woken sessions for jobs whose agent.cwd is empty. Sessions are only found by session search from the same directory, so this is usually the main workspace.'),
   autoArchive: z.boolean().default(true).description('Archive woken sessions once their turn ends, for jobs that do not set agent.autoArchive. Archived sessions leave the sidebar\'s active list but stay in DSH and in session search.'),
   reuseWithinHours: z.number().min(0).default(0).description('Reuse window for jobs that do not set agent.reuseWithinHours: send the prompt into the job\'s previous woken session when it was opened within this many hours. 0 always opens a new session.'),
+  deliver: DeliveryTarget.description('Default delivery target for jobs that do not set deliver. Jobs that post into an existing session do not use it. Unset: results are not delivered.'),
   historyRecords: z.natural().min(1).max(1000).default(DEFAULT_HISTORY_RECORDS)
     .description('Runs kept per job for the Cron tasks page (start, duration, exit code, woken session, output tails). Older runs are dropped.'),
   runLog: z.string().description('JSON Lines file that gets one line when a run starts and one when it ends (outcome, exit code, duration, output tails), so past runs can be checked later. Directories are created as needed. No file when empty.'),
