@@ -1,4 +1,5 @@
 import z from '@deepseek-ai/schemastery'
+import { DEFAULT_HISTORY_RECORDS } from './history.js'
 
 /** Default limit for one run of a job's command. */
 export const DEFAULT_TIMEOUT_SECONDS = 3600
@@ -24,5 +25,7 @@ const Job = z.object({
 
 export const Config = z.object({
   jobs: z.array(Job).default([]).description('Scheduled jobs.'),
+  historyRecords: z.natural().min(1).max(1000).default(DEFAULT_HISTORY_RECORDS)
+    .description('Runs kept per job for the Cron tasks page (start, duration, exit code, woken session, output tails). Older runs are dropped.'),
   runLog: z.string().description('JSON Lines file that gets one line when a run starts and one when it ends (outcome, exit code, duration, output tails), so past runs can be checked later. Directories are created as needed. No file when empty.'),
 })

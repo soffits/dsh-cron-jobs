@@ -34,7 +34,8 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.5",
-    "croner": "^10.0.1"
+    "croner": "^10.0.1",
+    "zod": "^4.6.7"
   },
   "keywords": [
     "dsh-plugin",
