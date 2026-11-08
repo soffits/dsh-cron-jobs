@@ -1,8 +1,14 @@
 # dsh-cron-jobs
 
-Cron-scheduled shell commands for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH).
+Scheduled jobs for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH): shell commands, agent prompts, or both.
 
-DSH's built-in Schedule delivers a prompt to an agent session, so every tick starts a model turn. That is wasteful for jobs that are only a script, or for a check that usually finds nothing. This plugin runs commands on a cron schedule inside the DSH Host process, so jobs start and stop with DSH and never touch a model. A job can also act as a gate: its command runs first, and a new agent session is opened only when the command's output says there is something to do. A **Cron tasks** page in the Web GUI shows every job, its recent runs, and lets you run a job now or pause its schedule.
+DSH's built-in Schedule delivers a prompt to an agent session, so every tick starts a model turn. That is wasteful for jobs that are only a script, or for a check that usually finds nothing. This plugin runs jobs inside the DSH Host process, so they start and stop with DSH:
+
+- A **command job** runs a shell command and never touches a model.
+- A **gated job** runs its command first and wakes an agent only when the output says there is something to do.
+- An **agent job** has no command: every run sends its prompt to an agent, like a scheduled task.
+
+Jobs run on cron expressions, RFC 5545 RRULE schedules, or once at a given time. They come from the plugin config, or an agent creates them from a conversation with the plugin's tools ("remind me here tomorrow at 9", "check this every Monday until January"). A **Cron tasks** page in the Web GUI shows every job and its recent runs, and lets you run a job now, pause it, or delete one an agent created.
 
 ## Install
 
@@ -26,11 +32,13 @@ Then ask the agent to install it, or call the plugin manager yourself:
 plugin_manager install_bundle /absolute/path/to/dsh-cron-jobs
 ```
 
+The bundle adds two rows: `cron-jobs`, the scheduler, and `cron-jobs-tools`, which gives every agent the tools described in [Jobs created from a conversation](#jobs-created-from-a-conversation). To give the tools to one agent preset only, disable the `cron-jobs-tools` row and mount `dsh-cron-jobs/tools` in that preset instead.
+
 Built and tested against DSH 0.2.2-rc.1 (`engines.dsh` is `>=0.2.2-rc.1 <0.3.0-0`). Commands run with `bash -c`, or `sh -c` when bash is missing, so the Host needs a POSIX shell. The plugin needs DSH's storage domain service (`@deepseek-ai/dsh-storage-domain`, part of every standard DSH composition) for run history and pause state.
 
 ## Configure
 
-Jobs live in the config of the `cron-jobs` row. Add an override to your profile's `cordis.patch.yml` (or edit the row on the plugin's settings page). An override replaces the whole `config`, so list every job in it.
+Config jobs live in the config of the `cron-jobs` row. Add an override to your profile's `cordis.patch.yml` (or edit the row on the plugin's settings page). An override replaces the whole `config`, so list every job in it.
 
 ```yaml
 - id: cron-jobs
@@ -60,18 +68,31 @@ Jobs live in the config of the `cron-jobs` row. Add an override to your profile'
             provider: deepseek
             model: deepseek-chat
             reasoningEffort: high
+
+      # Agent job: no command, the prompt goes out at every run.
+      - name: Weekly review
+        rrule: |
+          DTSTART;TZID=Europe/Berlin:20260907T090000
+          RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20270101T000000Z
+        agent:
+          prompt: Review last week's notes and plan this week.
+          # Optional: post into this existing session instead of opening a new one.
+          sessionId: session-0123
 ```
 
 | Field | Meaning |
 |---|---|
 | `name` | Job name, used in logs and session titles. Must be unique. |
-| `cron` | Cron expression: 5 fields, or 6 with seconds first. Parsed by [croner](https://github.com/hexagon/croner). |
-| `timeZone` | IANA time zone for the expression. The Host's zone when empty. |
-| `command` | Shell command line. |
+| `cron` | Cron expression: 5 fields, or 6 with seconds first. Parsed by [croner](https://github.com/hexagon/croner). Set exactly one of `cron`, `rrule` and `at`. |
+| `rrule` | RFC 5545 schedule: a `DTSTART` line and an `RRULE` line. The time zone comes from `DTSTART` (`TZID=...`, or `Z` for UTC). See [Schedules](#schedules). |
+| `at` | Run once at this time: ISO 8601 with an offset, or a local date-time read in `timeZone`. |
+| `timeZone` | IANA time zone for the cron expression or an `at` without offset. The Host's zone when empty. |
+| `command` | Shell command line. Leave it out for an agent job. |
 | `cwd` | Working directory of the command. The Host process directory when empty. |
 | `timeoutSeconds` | Stop the command (and everything it started) after this long. Default 3600; `0` means no limit. |
 | `enabled` | `false` keeps the job in the config without scheduling it. Default `true`. |
-| `agent.prompt` | Makes the job a gated job. The prompt sent to the new session. |
+| `agent.prompt` | With a command, makes the job a gated job; without one, an agent job. The prompt sent to the session. |
+| `agent.sessionId` | Send the prompt into this existing session instead of opening a new one. Such a session is never auto-archived. |
 | `agent.preset` | Agent preset of the new session. The Host default when empty. |
 | `agent.cwd` | Working directory of the woken session; it joins the workspace registered at that path. When empty: the row's `defaultAgentCwd`, then the job's `cwd`, then the Host default. |
 | `agent.autoArchive` | Archive the woken session once its turn ends (see below). The row's `autoArchive` when unset. |
@@ -94,7 +115,7 @@ Next to `jobs`, the row also takes:
 - One run of a job at a time: if a tick arrives while the previous run is still going, the tick is skipped and logged.
 - Start, exit status, duration and a short tail of stdout and stderr go to the DSH log under `cron-jobs`. Delivering the output anywhere else is the command's job.
 - Set `runLog` (next to `jobs`) to a file path to also keep that record as JSON Lines: one `start` line per run, one `end` line with `status`, `outcome`, `exitCode`, `durationMs` and the output tails, and a `skipped` line for a skipped tick. A `start` with no `end` means DSH stopped during the run. The file is only appended to; rotate it yourself if it grows.
-- Ticks missed while DSH is down are not caught up; the next tick runs normally.
+- Ticks of config jobs missed while DSH is down are not caught up; the next tick runs normally. (Jobs created from a conversation catch up once, see below.)
 - Unloading the plugin (stopping DSH or changing its config) stops the timers and terminates running commands.
 
 When `agent.model` is set, the model is checked with the Host's LLM service before the session is created, then selected on the new session the same way the model picker does. Unlike the picker, it does not become the Host's default model. A model the Host cannot route fails the wake (shown as "Could not wake the agent" with the reason in the run's output) instead of silently falling back to another model.
@@ -118,30 +139,84 @@ With `reuseWithinHours` above 0, a gated job sends its prompt into the session i
 
 Only sessions the plugin opened for that job are candidates. If the previous session no longer exists, cannot be resumed, is pinned or was taken over by a person, a new session is opened and the run notes why. DSH does not run model steps in an archived session, so with auto-archive on, an archived session is unarchived just before the prompt and archived again after its turn; with auto-archive off, an archived session is not reused. Runs that reused a session say so in the run history.
 
+## Schedules
+
+- **cron**: a cron expression, read in the job's time zone.
+- **rrule**: one `DTSTART` line and one `RRULE` line, for example `DTSTART;TZID=America/Toronto:20261109T100000` and `RRULE:FREQ=DAILY;INTERVAL=3;UNTIL=20261215T150000Z` (every three days at 10:00 Toronto time until mid-December). A `TZID` rule keeps local clock time across daylight-saving changes. `RRULE:FREQ=DAILY;COUNT=1` runs once. A `DTSTART` in the past is fine; runs start with the first occurrence after the job is armed. Rules are evaluated by DSH's own bounded RRULE engine ([`@deepseek-ai/dsh-util-time`](https://www.npmjs.com/package/@deepseek-ai/dsh-util-time), built on [rrule](https://github.com/jkbrzt/rrule)), the same one the built-in Schedule uses, so a rule behaves the same in both, with the same limits (no `SECONDLY`, `COUNT` at most 1000, and so on).
+- **at**: one run at a fixed time.
+
+When an RRULE or one-time schedule has no more runs, the job's state becomes **ended**. It stays listed until it is deleted (or, for config jobs, removed from the config).
+
+## Jobs created from a conversation
+
+The `cron-jobs-tools` row registers four tools. Their names start with `cron_job` by default; the row's `prefix` setting changes that (`prefix: schedule` gives `schedule_create` and so on, the names of DSH's built-in Schedule tools, for use in its place).
+
+| Tool | What it does |
+|---|---|
+| `cron_job_create` | Create a job: a title, a prompt and/or a command, exactly one of `cron`, `rrule` and `at` (with `timeZone` where needed), and where the prompt goes. |
+| `cron_job_edit` | `update` the given fields, `pause`, `resume` (continues from now), or `delete` a job by id. |
+| `cron_job_list` | Every job, from the config and from tools, with its id, state, schedule, next run, target and last run. |
+| `cron_job_view` | One job's full definition and its five latest runs. |
+
+A new job takes the calling session's working directory and agent preset, so a job created from a session in `/home/me/project` runs its command there and opens its sessions there. `cwd` sets another directory.
+
+Where the prompt goes (`target`):
+
+- `new` (default): a new session for every run, with the row's auto-archive and session reuse settings, like a gated config job.
+- `new_once`: one new session, opened by the first run; every later run posts into it.
+- `this_session`: the session that created the job, for reminders and follow-ups to the conversation. `sessionId` names another existing session instead.
+
+The prompt arrives as a scheduled message from the user, with the job's title and id, so the agent can look the job up or delete it when it is done. A message for an existing session is queued behind a turn that is still running. It is delivered even if the session is pinned or a person is using it, since that is what the job was created for; an archived target session is unarchived first. Target sessions are never auto-archived.
+
+Jobs created with the tools are kept in DSH storage (see below) and survive restarts. Each one remembers its next run, so a run missed while DSH was down happens once when it starts again (only once, however many were missed). If DSH stops in the middle of a run, that run happens again at startup. Jobs from the plugin config cannot be changed with the tools; `cron_job_edit` says so instead.
+
+A delegated subagent can use the tools, but its own session cannot be a target, since it ends with its task.
+
 ## Cron tasks page
 
 The Web GUI gets a **Cron tasks** entry in the sidebar, laid out like DSH's own Automation tasks page:
 
-- The list shows every configured job with its state (active, paused, off in config, or invalid schedule), its cron expression and time zone, the next run, and the result of the last run. Filter by state or search by name or command. The page refreshes every few seconds while it is visible.
-- Selecting a job opens its detail. **Settings** shows the job's config read-only (command, directory, time limit, and for gated jobs the agent preset, session directory and where it came from, auto-archive, session reuse and prompt). **Runs** lists the saved runs, newest first: start time, what started it (schedule or Run now), duration, exit code or other outcome, the woken session with a link that opens it, whether the session was reused, its archive state, and the tails of stdout and stderr.
-- The pause button pauses or resumes the job's schedule. **Run now** in the `⋯` menu starts one run immediately; it is refused while the job is already running. A gated job's footer links to its latest woken session.
+- The list shows every job with its state (active, paused, off in config, invalid, or ended), its schedule and time zone, the next run, and the result of the last run. Jobs an agent created are marked "Created by an agent". Filter by state or search by name, command or prompt. The page refreshes every few seconds while it is visible.
+- Selecting a job opens its detail. **Settings** shows the job read-only (schedule, what it does, command, directory, time limit, where the prompt goes, and for jobs with a prompt the agent preset, session directory and where it came from, auto-archive, session reuse and prompt; for jobs an agent created, when and from which session). **Runs** lists the saved runs, newest first: start time, what started it (schedule or Run now), duration, exit code or other outcome, the woken session with a link that opens it, whether the session was reused, its archive state, and the tails of stdout and stderr.
+- The pause button pauses or resumes the job's schedule. **Run now** in the `⋯` menu starts one run immediately; it is refused while the job is already running, and it does not move the schedule. **Delete** in the same menu removes a job an agent created, with its run history. A job with a prompt has a footer link to its latest session.
 
-Jobs are still defined only in the config; the page does not create, edit or delete them.
+The page does not create or edit jobs: config jobs are edited in the config, the others through the tools.
 
-### Run history and pause state
+### Run history, pause state and stored jobs
 
-Both are kept in DSH's storage domain service under the domain `cron_jobs` (with the default JSON backend, `<DSH_HOME>/storages/cron_jobs.json`), one record per job name, so they survive restarts:
+All three are kept in DSH's storage domain service under the domain `cron_jobs` (with the default JSON backend, `<DSH_HOME>/storages/cron_jobs.json`), so they survive restarts. The `jobs` table holds run history and pause state, one record per job (config jobs by name, other jobs by id); the `tasks` table holds the jobs created with the tools. A stored job looks like this:
+
+```json
+{
+  "id": "job-1a2b3c4d",
+  "title": "Check the parcel",
+  "prompt": "Has the parcel arrived? Tell me either way.",
+  "schedule": { "kind": "rrule", "rrule": "DTSTART;TZID=America/Toronto:20261109T100000\nRRULE:FREQ=DAILY;COUNT=1" },
+  "cwd": "/home/me",
+  "preset": "default",
+  "target": { "kind": "session", "sessionId": "session-0123" },
+  "status": "active",
+  "scheduledAt": "2026-11-09T15:00:00.000Z",
+  "createdAt": "2026-11-08T17:00:00.000Z",
+  "updatedAt": "2026-11-08T17:00:00.000Z",
+  "createdBy": "session-0123"
+}
+```
+
+`schedule` is `{ "kind": "cron", "expression", "timeZone" }`, `{ "kind": "rrule", "rrule" }` or `{ "kind": "at", "at" }` (a UTC instant); `target` is `{ "kind": "new" }`, `{ "kind": "new_once", "sessionId"? }` or `{ "kind": "session", "sessionId" }`; `status` is `active`, `paused` or `ended`; `command` and `timeoutSeconds` are optional. `scheduledAt` is the next run.
+
+For run history and pausing:
 
 - Each run is saved when it starts and completed when it ends. Only the newest `historyRecords` runs of a job are kept, and each saved run keeps the last 1000 characters of stdout and of stderr. A run still marked running when DSH starts again is shown as interrupted.
-- Pausing holds the job's cron timer and saves the pause, so the job stays paused after a restart until you resume it. A paused job can still be run now.
+- Pausing holds the job's timer and saves the pause, so the job stays paused after a restart until you resume it. A paused job can still be run now.
 - `enabled: false` in the config always wins: such a job is never scheduled, whatever its saved pause state, and pause and resume are unavailable for it. A pause saved earlier applies again once the job is enabled. Run now still works.
-- History and pause state are keyed by job name. Renaming a job starts a fresh record; the old name's record stays in storage but is no longer shown.
+- History and pause state of config jobs are keyed by job name. Renaming a config job starts a fresh record; the old name's record stays in storage but is no longer shown. Deleting a stored job removes its history too.
 
-If the storage domain cannot be opened, jobs still run and the page says that history is kept in memory only.
+If the storage domain cannot be opened, config jobs still run, the page says that history is kept in memory only, and jobs created with the tools are lost on restart.
 
 ### How the page talks to the Host
 
-The page calls the Host with POST requests to `/api/dsh-cron-jobs/<endpoint>`, exact routes the plugin adds to DSH's shared `/api` channel. They are authenticated like the rest of the Web GUI, and DSH lets only the owner reach them, since Run now executes shell commands. The page's styles use only DSH theme tokens, and its layout and icons are copied from DSH's own pages (DSH is MIT-licensed), so it follows light and dark themes and the interface language (English and Chinese).
+The page calls the Host with POST requests to `/api/dsh-cron-jobs/<endpoint>` (`list`, `runs`, `run`, `pause`, `delete`), exact routes the plugin adds to DSH's shared `/api` channel. They are authenticated like the rest of the Web GUI, and DSH lets only the owner reach them, since Run now executes shell commands. The page's styles use only DSH theme tokens, and its layout and icons are copied from DSH's own pages (DSH is MIT-licensed), so it follows light and dark themes and the interface language (English and Chinese).
 
 ## Wake rule for gated jobs
 
@@ -150,7 +225,7 @@ After the command finishes:
 1. If it failed (non-zero exit, killed, timed out, or could not start), the failure is logged and no agent is woken.
 2. If stdout is empty or only whitespace, no agent is woken.
 3. If the last non-empty line of stdout is a JSON object whose `wakeAgent` is exactly `false`, such as `{"wakeAgent": false}`, no agent is woken. This is the gate convention of Hermes Agent cron jobs, so existing gate scripts work unchanged. Any other value, a missing key, or a non-JSON last line wakes.
-4. Otherwise a new session is opened (or the previous one reused, see Session reuse) with the job's preset, directory and model, titled `<job name> · <YYYY-MM-DD HH:mm>` in the job's time zone, and sent the prompt followed by the command's stdout in a labelled block. The message is marked as a scheduled message, so the Web GUI shows it like a scheduled run.
+4. Otherwise the prompt goes to the job's session, or a new session is opened (or the previous one reused, see Session reuse) with the job's preset, directory and model, titled `<job name> · <YYYY-MM-DD HH:mm>` in the job's time zone, and sent the prompt followed by the command's stdout in a labelled block. The message is marked as a scheduled message, so the Web GUI shows it like a scheduled run.
 
 A gate script that prints a summary when there is work, and nothing (or `{"wakeAgent": false}`) when there is not, is enough:
 
