@@ -4,11 +4,18 @@ import { DEFAULT_HISTORY_RECORDS } from './history.js'
 /** Default limit for one run of a job's command. */
 export const DEFAULT_TIMEOUT_SECONDS = 3600
 
+const Model = z.object({
+  provider: z.string().description('Model provider id, as in the model picker (for example deepseek). Leave provider and model empty to use the preset or host default.'),
+  model: z.string().description('Model id within that provider.'),
+  reasoningEffort: z.string().description('Reasoning effort id for that model. The model\'s default when empty.'),
+}).description('Model of the new session. Used only when both provider and model are set; otherwise the preset or host default applies.')
+
 const Agent = z.object({
   prompt: z.string().role('textarea')
     .description('Prompt sent to a new agent session when the command asks for it. Leave empty for a plain job.'),
   preset: z.string().description('Agent preset of the new session. The host default when empty.'),
   cwd: z.string().description('Working directory of the new session. The job\'s cwd, then the host default, when empty.'),
+  model: Model,
 }).description('Wake an agent: run the command as a gate and open a new session only when its output asks for it.')
 
 const Job = z.object({

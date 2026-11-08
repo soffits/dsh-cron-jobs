@@ -1,5 +1,5 @@
 import { Cron } from 'croner'
-import { JobRunner, isGated } from './job.js'
+import { JobRunner, agentModel, isGated } from './job.js'
 
 /**
  * Owns every configured job: one runner per unique job name, a cron timer for
@@ -153,7 +153,7 @@ export class CronJobs {
       timeoutSeconds: job.timeoutSeconds ?? 0,
       gated: isGated(job),
       agent: isGated(job)
-        ? { prompt: job.agent.prompt, preset: job.agent.preset || null, cwd: job.agent.cwd || job.cwd || null }
+        ? { prompt: job.agent.prompt, preset: job.agent.preset || null, cwd: job.agent.cwd || job.cwd || null, model: agentModel(job) ?? null }
         : null,
       nextRunAt: next ? next.toISOString() : null,
       running: runner.current,

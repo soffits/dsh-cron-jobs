@@ -4,12 +4,13 @@ import { openAgentSession, userMessage } from '../src/session.js'
 
 const logger = { warn() {}, info() {}, error() {} }
 
-function fakeHost({ flushOk = true, resolveError } = {}) {
+function fakeHost({ flushOk = true, resolveError, modelError } = {}) {
   const calls = []
   const session = { id: 'session-new' }
   const agent = {
     id: 'session-new',
     session,
+    model: { select(selection) { calls.push(['selectModel', selection]) } },
     followup(message) { calls.push(['followup', message]) },
   }
   const services = {
@@ -29,6 +30,13 @@ function fakeHost({ flushOk = true, resolveError } = {}) {
       },
     },
     sessionTitle: { rename(s, title) { calls.push(['rename', s, title]) } },
+    llm: {
+      async resolveCallConfig(config) {
+        calls.push(['checkModel', config])
+        if (modelError) throw new Error(modelError)
+        return config
+      },
+    },
   }
   return { ctx: { get: key => services[key] }, calls, session }
 }
@@ -53,6 +61,34 @@ test('omits cwd and preset when not given', async () => {
   await openAgentSession(ctx, { text: 't', title: 'x' }, logger)
   assert.deepEqual(calls.find(call => call[0] === 'create')[1], {})
   assert.equal(calls.some(call => call[0] === 'resolveByPath'), false)
+})
+
+test('a requested model is checked first and set on the new session before the prompt', async () => {
+  const { ctx, calls } = fakeHost()
+  const model = { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' }
+  await openAgentSession(ctx, { text: 't', title: 'x', model }, logger)
+  assert.deepEqual(calls.map(call => call[0]), [
+    'withoutInitiator', 'checkModel', 'create', 'resolveAgent', 'selectModel', 'rename', 'followup', 'flush',
+  ])
+  assert.deepEqual(calls[1][1], model)
+  assert.deepEqual(calls[4][1], model)
+  // The model is not a session-create field.
+  assert.deepEqual(calls[2][1], {})
+})
+
+test('no model selection without a requested model', async () => {
+  const { ctx, calls } = fakeHost()
+  await openAgentSession(ctx, { text: 't', title: 'x' }, logger)
+  assert.equal(calls.some(call => call[0] === 'selectModel' || call[0] === 'checkModel'), false)
+})
+
+test('an unavailable model fails before any session is created', async () => {
+  const { ctx, calls } = fakeHost({ modelError: 'unknown provider' })
+  await assert.rejects(
+    openAgentSession(ctx, { text: 't', title: 'x', model: { provider: 'nope', model: 'm' } }, logger),
+    /model nope\/m is not available: unknown provider/,
+  )
+  assert.equal(calls.some(call => call[0] === 'create'), false)
 })
 
 test('fails clearly without a session controller', async () => {

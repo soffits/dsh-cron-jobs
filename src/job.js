@@ -20,6 +20,20 @@ export function isGated(job) {
 }
 
 /**
+ * The model chosen for a job's woken sessions, or undefined to use the preset
+ * or host default. Needs both a provider and a model.
+ * @param {Job} job
+ * @returns {{ provider: string, model: string, reasoningEffort?: string } | undefined}
+ */
+export function agentModel(job) {
+  const provider = job.agent?.model?.provider?.trim()
+  const model = job.agent?.model?.model?.trim()
+  if (!provider || !model) return undefined
+  const reasoningEffort = job.agent.model.reasoningEffort?.trim()
+  return { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) }
+}
+
+/**
  * Runs one configured job per tick. A tick that arrives while the previous run
  * of the same job is still going is skipped.
  *
@@ -30,14 +44,14 @@ export function isGated(job) {
  * @property {string} command
  * @property {string} [cwd]
  * @property {number} [timeoutSeconds]
- * @property {{ prompt?: string, preset?: string, cwd?: string }} [agent]
+ * @property {{ prompt?: string, preset?: string, cwd?: string, model?: { provider?: string, model?: string, reasoningEffort?: string } }} [agent]
  */
 export class JobRunner {
   /**
    * @param {Job} job
    * @param {object} deps
    * @param {(options: object) => Promise<import('./command.js').CommandResult>} deps.run - Runs a command.
-   * @param {(request: { text: string, title: string, agentPreset?: string, cwd?: string }) => Promise<string>} deps.wake - Opens an agent session; resolves to its id.
+   * @param {(request: { text: string, title: string, agentPreset?: string, cwd?: string, model?: object }) => Promise<string>} deps.wake - Opens an agent session; resolves to its id.
    * @param {{ info: Function, warn: Function }} deps.logger
    * @param {AbortSignal} [deps.signal] - Stops a running command when aborted.
    * @param {(entry: object) => Promise<void>} [deps.record] - Appends a run record (see runlog.js).
@@ -111,7 +125,7 @@ export class JobRunner {
           endedAt: endedAt.toISOString(),
           durationMs: result?.durationMs ?? (endedAt.getTime() - firedAt.getTime()),
           sessionId: outcome.sessionId,
-          error: thrown ?? result?.error,
+          error: thrown ?? outcome.error ?? result?.error,
           ...(result ? {
             outcome: describeOutcome(result, job),
             exitCode: result.exitCode ?? null,
@@ -159,13 +173,15 @@ export class JobRunner {
         }),
         title: sessionTitle(job.name, localTime),
         ...(job.agent.preset ? { agentPreset: job.agent.preset } : {}),
+        ...(agentModel(job) ? { model: agentModel(job) } : {}),
         ...(job.agent.cwd || job.cwd ? { cwd: job.agent.cwd || job.cwd } : {}),
       })
       logger.info('[%s] woke agent in session %s', job.name, sessionId)
       return { status: 'woke', sessionId }
     } catch (error) {
-      logger.warn('[%s] could not wake agent: %s', job.name, describeError(error))
-      return { status: 'wake-failed' }
+      const reason = describeError(error)
+      logger.warn('[%s] could not wake agent: %s', job.name, reason)
+      return { status: 'wake-failed', error: reason }
     }
   }
 

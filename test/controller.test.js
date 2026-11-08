@@ -60,13 +60,15 @@ test('list shows each job with its state, schedule and next run', () => {
     { name: 'c', cron: 'bad', command: 'true' },
     { name: 'g', cron: '0 * * * *', command: './gate', agent: { prompt: 'look', preset: 'p' }, cwd: '/w' },
     { name: 'a', cron: '* * * * *', command: 'dup' },
+    { name: 'm', cron: '0 * * * *', command: './gate', agent: { prompt: 'look', model: { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' } } },
   ])
   const jobs = controller.list()
-  assert.deepEqual(jobs.map(job => [job.name, job.state]), [['a', 'active'], ['b', 'disabled'], ['c', 'invalid'], ['g', 'active']])
+  assert.deepEqual(jobs.map(job => [job.name, job.state]), [['a', 'active'], ['b', 'disabled'], ['c', 'invalid'], ['g', 'active'], ['m', 'active']])
   assert.equal(jobs[0].nextRunAt, '2030-01-01T00:00:00.000Z')
   assert.equal(jobs[1].nextRunAt, null)
   assert.equal(jobs[2].error, 'invalid cron')
-  assert.deepEqual(jobs[3].agent, { prompt: 'look', preset: 'p', cwd: '/w' })
+  assert.deepEqual(jobs[3].agent, { prompt: 'look', preset: 'p', cwd: '/w', model: null })
+  assert.deepEqual(jobs[4].agent.model, { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' })
   assert.equal(jobs[0].command, 'true', 'the first copy of a duplicate name wins')
 })
 

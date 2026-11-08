@@ -47,6 +47,11 @@ Jobs live in the config of the `cron-jobs` row. Add an override to your profile'
           prompt: Triage the new issues listed below and label them.
           preset: standard
           cwd: /home/me/project
+          # Optional: the model of the woken session.
+          model:
+            provider: deepseek
+            model: deepseek-chat
+            reasoningEffort: high
 ```
 
 | Field | Meaning |
@@ -61,6 +66,8 @@ Jobs live in the config of the `cron-jobs` row. Add an override to your profile'
 | `agent.prompt` | Makes the job a gated job. The prompt sent to the new session. |
 | `agent.preset` | Agent preset of the new session. The Host default when empty. |
 | `agent.cwd` | Working directory of the new session. The job's `cwd`, then the Host default, when empty. |
+| `agent.model.provider`, `agent.model.model` | Model of the new session, with the same provider and model ids the model picker uses. Both must be set; otherwise the preset's or the Host's default model applies. |
+| `agent.model.reasoningEffort` | Reasoning effort id for that model. The model's default when empty. |
 
 Next to `jobs`, the row also takes:
 
@@ -76,6 +83,8 @@ Next to `jobs`, the row also takes:
 - Set `runLog` (next to `jobs`) to a file path to also keep that record as JSON Lines: one `start` line per run, one `end` line with `status`, `outcome`, `exitCode`, `durationMs` and the output tails, and a `skipped` line for a skipped tick. A `start` with no `end` means DSH stopped during the run. The file is only appended to; rotate it yourself if it grows.
 - Ticks missed while DSH is down are not caught up; the next tick runs normally.
 - Unloading the plugin (stopping DSH or changing its config) stops the timers and terminates running commands.
+
+When `agent.model` is set, the model is checked with the Host's LLM service before the session is created, then selected on the new session the same way the model picker does. Unlike the picker, it does not become the Host's default model. A model the Host cannot route fails the wake (shown as "Could not wake the agent" with the reason in the run's output) instead of silently falling back to another model.
 
 ## Cron tasks page
 
@@ -109,7 +118,7 @@ After the command finishes:
 1. If it failed (non-zero exit, killed, timed out, or could not start), the failure is logged and no agent is woken.
 2. If stdout is empty or only whitespace, no agent is woken.
 3. If the last non-empty line of stdout is a JSON object whose `wakeAgent` is exactly `false`, such as `{"wakeAgent": false}`, no agent is woken. This is the gate convention of Hermes Agent cron jobs, so existing gate scripts work unchanged. Any other value, a missing key, or a non-JSON last line wakes.
-4. Otherwise a new session is opened with the job's preset and directory, titled `<job name> · <YYYY-MM-DD HH:mm>` in the job's time zone, and sent the prompt followed by the command's stdout in a labelled block. The message is marked as a scheduled message, so the Web GUI shows it like a scheduled run.
+4. Otherwise a new session is opened with the job's preset, directory and model, titled `<job name> · <YYYY-MM-DD HH:mm>` in the job's time zone, and sent the prompt followed by the command's stdout in a labelled block. The message is marked as a scheduled message, so the Web GUI shows it like a scheduled run.
 
 A gate script that prints a summary when there is work, and nothing (or `{"wakeAgent": false}`) when there is not, is enough:
 

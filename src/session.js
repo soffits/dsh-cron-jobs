@@ -11,7 +11,13 @@ import { randomUUID } from 'node:crypto'
  * Uses only public Host services, read with `ctx.get()` so that hosts
  * without them still run plain jobs:
  * `sessionController` (required), `sessions` (required), `agents`,
- * `workspaceRegistry`, `sessionTitle` (optional).
+ * `workspaceRegistry`, `sessionTitle`, `llm` (optional).
+ *
+ * A requested model is checked with `llm.resolveCallConfig()` before the
+ * session is created, then set on the new session's agent with
+ * `agent.model.select()`, the same steps the Web model picker's
+ * `selectModel` takes. Unlike the picker, it does not save the choice as the
+ * host's default model, so a job's model never changes other sessions.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - Plugin context.
  * @param {object} request
@@ -19,16 +25,18 @@ import { randomUUID } from 'node:crypto'
  * @param {string} request.title - Session title.
  * @param {string} [request.agentPreset] - Agent preset id; the host default when omitted.
  * @param {string} [request.cwd] - Session directory; the host default when omitted.
+ * @param {{ provider: string, model: string, reasoningEffort?: string }} [request.model] - Model of the session; the preset or host default when omitted.
  * @param {{ warn: Function }} logger
  * @returns {Promise<string>} The new session id.
  */
-export async function openAgentSession(ctx, { text, title, agentPreset, cwd }, logger) {
+export async function openAgentSession(ctx, { text, title, agentPreset, cwd, model }, logger) {
   const controller = ctx.get('sessionController')
   const sessions = ctx.get('sessions')
   if (controller === undefined || sessions === undefined) {
     throw new Error('this host cannot create sessions (no sessionController service)')
   }
   const open = async () => {
+    if (model !== undefined) await checkModel(ctx, model)
     const { sessionId } = await controller.create({
       ...(cwd ? { cwd } : {}),
       ...(agentPreset ? { agentPreset } : {}),
@@ -36,6 +44,7 @@ export async function openAgentSession(ctx, { text, title, agentPreset, cwd }, l
     const resolved = await controller.resolveAgent(sessionId)
     if ('error' in resolved) throw resolved.error
     const { agent } = resolved
+    if (model !== undefined) agent.model.select({ ...model })
 
     await joinWorkspace(ctx, sessionId, cwd, logger)
     nameSession(ctx, agent, title, logger)
@@ -63,6 +72,18 @@ export function userMessage(text) {
     content: [{ type: 'text', text }],
     source: { kind: 'schedule' },
   })
+}
+
+/** Reject a model the host cannot route, before any session is created. */
+async function checkModel(ctx, model) {
+  const llm = ctx.get('llm')
+  if (llm === undefined) throw new Error('this host cannot select models (no llm service)')
+  try {
+    await llm.resolveCallConfig({ ...model })
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(`model ${model.provider}/${model.model} is not available: ${reason}`)
+  }
 }
 
 async function joinWorkspace(ctx, sessionId, cwd, logger) {

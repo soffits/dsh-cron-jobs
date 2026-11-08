@@ -87,6 +87,9 @@ window.__ModuleLoader__.load({
       'field.preset': 'Agent preset',
       'field.presetDefault': 'Host default',
       'field.agentCwd': 'Session directory',
+      'field.model': 'Model',
+      'field.modelDefault': 'Preset or host default',
+      'field.effort': 'Reasoning effort',
       'field.prompt': 'Agent prompt',
       'runs.empty': 'No runs yet.',
       'runs.retention': 'The last {count} runs of each job are kept.',
@@ -175,6 +178,9 @@ window.__ModuleLoader__.load({
       'field.preset': '智能体预设',
       'field.presetDefault': '主机默认',
       'field.agentCwd': '会话目录',
+      'field.model': '模型',
+      'field.modelDefault': '预设或主机默认',
+      'field.effort': '推理强度',
       'field.prompt': '智能体提示词',
       'runs.empty': '还没有运行记录。',
       'runs.retention': '每个任务保留最近 {count} 次运行。',
@@ -387,6 +393,12 @@ window.__ModuleLoader__.load({
       return job.timeZone ? `${job.cron} (${job.timeZone})` : job.cron
     }
 
+    function modelText(model) {
+      if (!model) return null
+      const route = `${model.provider} / ${model.model}`
+      return model.reasoningEffort ? `${route} · ${model.reasoningEffort}` : route
+    }
+
     function stateMatches(job, filter) {
       if (filter === 'all') return true
       if (filter === 'off') return OFF.has(job.state)
@@ -437,6 +449,7 @@ window.__ModuleLoader__.load({
         meta.push(h('span', { key: 'state', className: cx('dcj-metadata', job.state === 'invalid' && 'dcj-metaError') }, t(`state.${job.state}`)))
       }
       meta.push(h('span', { key: 'cron', className: 'dcj-metadata dcj-code' }, scheduleText(job, t)))
+      if (job.agent?.model) meta.push(h('span', { key: 'model', className: 'dcj-metadata' }, modelText(job.agent.model)))
       if (job.running) {
         meta.push(h('span', { key: 'running', className: 'dcj-metadata' }, t('list.running', { time: formatRelative(job.running.startedAt, locale, now) })))
       } else if (job.nextRunAt) {
@@ -475,11 +488,15 @@ window.__ModuleLoader__.load({
         h(RuleRow, { key: 'kind', label: t('field.kind') }, t(job.gated ? 'field.kindGated' : 'field.kindPlain')),
       ]
       if (job.agent) {
-        rows.push(
+        rows.push(...[
           h(RuleRow, { key: 'preset', label: t('field.preset') }, job.agent.preset || t('field.presetDefault')),
+          h(RuleRow, { key: 'model', label: t('field.model') }, job.agent.model
+            ? h('span', { className: 'dcj-code' }, `${job.agent.model.provider} / ${job.agent.model.model}`)
+            : t('field.modelDefault')),
+          job.agent.model?.reasoningEffort && h(RuleRow, { key: 'effort', label: t('field.effort') }, job.agent.model.reasoningEffort),
           h(RuleRow, { key: 'agentCwd', label: t('field.agentCwd') }, job.agent.cwd ? h('span', { className: 'dcj-code' }, job.agent.cwd) : t('field.cwdHost')),
           h(RuleRow, { key: 'prompt', label: t('field.prompt'), stack: true }, h('pre', { className: 'dcj-pre' }, job.agent.prompt)),
-        )
+        ].filter(Boolean))
       }
       return h('div', { className: 'dcj-ruleRows' }, rows)
     }

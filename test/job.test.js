@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { JobRunner, isGated } from '../src/job.js'
+import { JobRunner, agentModel, isGated } from '../src/job.js'
+import { Config } from '../src/config.js'
 
 function makeLogger() {
   const lines = []
@@ -110,7 +111,7 @@ test('a wake failure is logged and does not throw', async () => {
     result: okResult('go'),
     wakeImpl: async () => { throw new Error('no controller') },
   })
-  assert.deepEqual(await runner.tick(), { status: 'wake-failed' })
+  assert.deepEqual(await runner.tick(), { status: 'wake-failed', error: 'no controller' })
   assert.ok(logger.lines.some(line => line === 'warn [g] could not wake agent: no controller'))
 })
 
@@ -135,4 +136,45 @@ test('the overlap guard is released when the runner throws', async () => {
   await assert.rejects(runner.tick(), /runner bug/)
   await assert.rejects(runner.tick(), /runner bug/)
   assert.equal(calls, 2)
+})
+
+test('agentModel needs a provider and a model; effort is optional', () => {
+  assert.equal(agentModel({}), undefined)
+  assert.equal(agentModel({ agent: { prompt: 'p', model: { provider: 'deepseek', model: '' } } }), undefined)
+  assert.equal(agentModel({ agent: { prompt: 'p', model: { provider: ' ', model: 'm' } } }), undefined)
+  assert.deepEqual(agentModel({ agent: { model: { provider: ' deepseek ', model: 'deepseek-chat', reasoningEffort: '' } } }),
+    { provider: 'deepseek', model: 'deepseek-chat' })
+  assert.deepEqual(agentModel({ agent: { model: { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' } } }),
+    { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' })
+})
+
+test('config accepts agent.model and the wake request carries it', async () => {
+  const config = Config({ jobs: [{
+    name: 'g', cron: '* * * * *', command: 'echo hi',
+    agent: { prompt: 'look', model: { provider: 'deepseek', model: 'deepseek-reasoner', reasoningEffort: 'max' } },
+  }] })
+  assert.deepEqual(config.jobs[0].agent.model, { provider: 'deepseek', model: 'deepseek-reasoner', reasoningEffort: 'max' })
+  const { runner, wakes } = setup(config.jobs[0], { result: okResult('work\n') })
+  assert.equal((await runner.tick()).status, 'woke')
+  assert.deepEqual(wakes[0].model, { provider: 'deepseek', model: 'deepseek-reasoner', reasoningEffort: 'max' })
+
+  const plain = Config({ jobs: [{ name: 'p', cron: '* * * * *', command: 'echo hi', agent: { prompt: 'look' } }] })
+  const second = setup(plain.jobs[0], { result: okResult('work\n') })
+  await second.runner.tick()
+  assert.equal('model' in second.wakes[0], false)
+})
+
+test('a saved run keeps the reason a wake failed', async () => {
+  const { HistoryStore, memoryTable } = await import('../src/history.js')
+  const history = new HistoryStore({ table: memoryTable(), logger: { warn() {} } })
+  const runner = new JobRunner({ name: 'g', command: 'x', agent: { prompt: 'p' } }, {
+    logger: { info() {}, warn() {}, error() {} },
+    history,
+    run: async () => okResult('go'),
+    wake: async () => { throw new Error('model nope/m is not available') },
+  })
+  await runner.tick()
+  const [run] = history.runs('g')
+  assert.equal(run.status, 'wake-failed')
+  assert.equal(run.error, 'model nope/m is not available')
 })
