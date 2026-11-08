@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { ScheduleError, ScheduleTimer, describeSchedule, parseSchedule, scheduleFromInput } from '../src/schedule.js'
+import { CronTimer, ScheduleError, ScheduleTimer, describeSchedule, parseSchedule, scheduleFromInput } from '../src/schedule.js'
 
 const at = iso => Date.parse(iso)
 
@@ -88,4 +88,37 @@ test('ScheduleTimer waits across long gaps and ends when the schedule is used up
   t.mock.timers.tick(24 * 3600 * 1000)
   assert.equal(fired.length, 1)
   assert.equal(timer.nextRun(), null)
+})
+
+test('CronTimer keeps a due tick when its timeout wakes early and the clock passes the due time meanwhile', () => {
+  // croner's own timer drops this tick for a timer that has not fired yet:
+  // after an early wake it computes the due time again from "now", which by
+  // then is past it, and moves on to the next hour.
+  const due = Date.parse('2026-11-08T19:23:00Z')
+  let clock = due - 4000
+  const fired = []
+  const timer = new CronTimer('23 * * * *', { timezone: 'America/Toronto', now: () => clock }, () => fired.push(clock))
+  try {
+    assert.equal(timer.nextRun().getTime(), due)
+    clock = due - 1 // the timeout wakes 1 ms early
+    timer.wake()
+    assert.deepEqual(fired, [], 'nothing runs before the due time')
+    assert.equal(timer.nextRun().getTime(), due, 'the due tick is kept')
+    clock = due // the re-armed timeout wakes at the due time
+    timer.wake()
+    assert.deepEqual(fired, [due])
+    assert.equal(timer.nextRun().toISOString(), '2026-11-08T20:23:00.000Z')
+  } finally {
+    timer.stop()
+  }
+})
+
+test('CronTimer has croner\'s shape: starts paused, rejects a bad pattern or zone', () => {
+  const fired = []
+  const paused = new CronTimer('* * * * *', { timezone: 'UTC', paused: true }, () => fired.push(1))
+  assert.equal(paused.timer, undefined, 'a paused timer arms no timeout')
+  assert.equal(paused.nextRun() instanceof Date, true)
+  paused.stop()
+  assert.throws(() => new CronTimer('bad', { timezone: 'UTC' }), ScheduleError)
+  assert.throws(() => new CronTimer('* * * * *', { timezone: 'Mars/Base' }), ScheduleError)
 })

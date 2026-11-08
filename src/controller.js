@@ -1,8 +1,13 @@
-import { Cron } from 'croner'
 import { JobRunner, agentModel, agentSettings, isGated, jobKind } from './job.js'
-import { ScheduleError, ScheduleTimer, describeSchedule, parseSchedule, scheduleFromInput } from './schedule.js'
+import { CronTimer, ScheduleError, ScheduleTimer, describeSchedule, parseSchedule, scheduleFromInput } from './schedule.js'
 import { JobStore } from './store.js'
 import { deliveryTarget, resolveDelivery } from './deliver.js'
+
+/** How often the watchdog looks for lost timers. */
+export const WATCHDOG_MS = 60_000
+
+/** How late a tick must be before the watchdog treats its timer as lost. */
+export const OVERDUE_MS = 60_000
 
 /** Longest job title accepted from the tools. */
 export const MAX_TITLE_LENGTH = 200
@@ -30,9 +35,10 @@ export class JobInputError extends Error {
  * and the read model the Web page and the tools show.
  *
  * Config jobs are keyed by name (their id is their name). Their timers are
- * croner timers for cron expressions, as before, and schedule timers for
- * rrule and one-time schedules; ticks missed while DSH is down are not
- * caught up. Stored jobs keep their next run in storage, so a run missed
+ * schedule timers (cron through {@link CronTimer}); ticks missed while DSH
+ * is down are not caught up. A watchdog runs a tick whose timer was lost
+ * (its due time passed without a run) late, and writes an `overdue` line to
+ * the run log, so a tick is never missed silently while DSH runs. Stored jobs keep their next run in storage, so a run missed
  * while DSH was down happens once at startup, and they can be changed only
  * through this controller.
  *
@@ -60,11 +66,13 @@ export class CronJobs {
    * @param {AbortSignal} [options.signal] - Stops running commands when aborted.
    * @param {(entry: object) => Promise<void>} [options.record] - Run log, see runlog.js.
    * @param {import('./history.js').HistoryStore} [options.history] - Saved runs, pause state and stored jobs.
-   * @param {typeof Cron} [options.CronClass] - Replaceable for tests.
+   * @param {typeof CronTimer} [options.CronClass] - Timer for config cron jobs; replaceable for tests.
    * @param {typeof ScheduleTimer} [options.TimerClass] - Replaceable for tests.
    * @param {() => Date} [options.now]
+   * @param {number} [options.watchdogMs] - How often the watchdog looks for lost timers; 0 turns it off.
+   * @param {number} [options.overdueMs] - How far past its due time a tick must be before the watchdog runs it.
    */
-  constructor({ jobs, logger, run, wake, reuse, settle, send, answer, defaults = {}, signal, record, history, CronClass = Cron, TimerClass = ScheduleTimer, now = () => new Date() }) {
+  constructor({ jobs, logger, run, wake, reuse, settle, send, answer, defaults = {}, signal, record, history, CronClass = CronTimer, TimerClass = ScheduleTimer, now = () => new Date(), watchdogMs = WATCHDOG_MS, overdueMs = OVERDUE_MS }) {
     this.logger = logger
     this.defaults = defaults
     this.history = history
@@ -72,6 +80,9 @@ export class CronJobs {
     this.CronClass = CronClass
     this.TimerClass = TimerClass
     this.now = now
+    this.watchdogMs = watchdogMs
+    this.overdueMs = overdueMs
+    this.record = record ?? (async () => {})
     this.deps = { run, wake, reuse, settle, send, answer, defaults, logger, signal, record, history, now }
     /** @type {Map<string, { job: object, runner: JobRunner, spec?: object, record?: object, timer?: any, error?: string }>} */
     this.entries = new Map()
@@ -112,7 +123,39 @@ export class CronJobs {
       entry.runner.resumeDeliveries().catch(error => this.logger.warn('[%s] pending deliveries not resumed: %s', entry.job.name, String(error)))
     }
     for (const entry of this.entries.values()) this.arm(entry)
+    // A line per start and stop, so a gap in the run log can be told apart
+    // from a lost tick: no runs happen between a stop and the next start.
+    this.record({ time: this.now().toISOString(), job: null, event: 'scheduler-start', jobs: this.entries.size, scheduled: this.scheduledRunners().size })
+    if (this.watchdogMs > 0) {
+      this.watchdog = setInterval(() => this.checkOverdue(), this.watchdogMs)
+      this.watchdog.unref?.()
+    }
     return this
+  }
+
+  /**
+   * Find jobs whose next run is well in the past although nothing paused
+   * them: their timer was lost. Each such tick is written to the run log as
+   * `overdue` and run now, late, instead of being skipped silently.
+   * @returns {string[]} Names of the jobs found overdue.
+   */
+  checkOverdue() {
+    if (this.stopped) return []
+    const now = this.now().getTime()
+    const found = []
+    for (const entry of this.entries.values()) {
+      if (entry.timer === undefined || this.pausedEntry(entry)) continue
+      const due = this.nextRun(entry)
+      if (due === null || now - due.getTime() <= this.overdueMs) continue
+      // Report each lost occurrence once, even if re-arming does not help.
+      if (entry.overdueAt === due.getTime()) continue
+      entry.overdueAt = due.getTime()
+      found.push(entry.job.name)
+      this.logger.warn('[%s] tick due at %s did not run; running it now', entry.job.name, due.toISOString())
+      this.record({ time: new Date(now).toISOString(), job: entry.job.name, event: 'overdue', dueAt: due.toISOString(), lateMs: now - due.getTime() })
+      entry.timer.arm?.()
+    }
+    return found
   }
 
   /** (Re)create the timer of one job from its current definition. */
@@ -131,7 +174,7 @@ export class CronJobs {
     let timer
     try {
       if (!record && entry.spec?.kind === 'cron') {
-        timer = new this.CronClass(job.cron, { timezone: job.timeZone || undefined }, () => this.fire(entry))
+        timer = new this.CronClass(job.cron, { timezone: job.timeZone || undefined, paused, now: () => this.now().getTime() }, () => this.fire(entry))
         if (paused) timer.pause?.()
       } else {
         if (job.specError) throw new ScheduleError('invalid_rule', job.specError)
@@ -204,9 +247,12 @@ export class CronJobs {
    * stop when the abort signal given to the runners fires.
    */
   async stop() {
+    if (this.stopped) return Promise.allSettled([...this.inflight])
     this.stopped = true
+    clearInterval(this.watchdog)
     for (const entry of this.entries.values()) entry.timer?.stop()
-    await Promise.allSettled([...this.inflight])
+    const stopping = this.record({ time: this.now().toISOString(), job: null, event: 'scheduler-stop' })
+    await Promise.allSettled([...this.inflight, stopping])
   }
 
   isPaused(id) {

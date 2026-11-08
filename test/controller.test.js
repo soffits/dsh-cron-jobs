@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { CronJobs } from '../src/controller.js'
+import { CronTimer } from '../src/schedule.js'
 import { HistoryStore, memoryTable } from '../src/history.js'
 import { createRpcHandler } from '../src/rpc.js'
 
@@ -194,4 +195,75 @@ test('the page channel serves only the owner and maps controller answers', async
   assert.equal((await handler('runs', { name: 'zz' }, undefined, owner)).error.code, 'cron-jobs/not-found')
   assert.equal((await handler('nope', {}, undefined, owner)).error.code, 'cron-jobs/not-found')
   assert.equal((await createRpcHandler(() => undefined)('list', {}, undefined, owner)).error.code, 'cron-jobs/unavailable')
+})
+
+test('config cron jobs run on CronTimer by default', async () => {
+  const controller = new CronJobs({
+    jobs: [{ name: 'a', cron: '23 * * * *', timeZone: 'America/Toronto', command: 'true' }],
+    logger: quiet, run: async () => okResult, wake: async () => '', watchdogMs: 0,
+  }).start()
+  try {
+    assert.ok(controller.entries.get('a').timer instanceof CronTimer)
+    assert.equal(controller.get('a').scheduled, true)
+    assert.equal(new Date(controller.get('a').nextRunAt).getUTCMinutes(), 23)
+  } finally {
+    await controller.stop()
+  }
+})
+
+test('the watchdog runs a tick whose timer was lost, logs it once, and skips paused jobs', async () => {
+  const lines = []
+  let clock = new Date('2026-11-08T19:30:00Z')
+  const armed = []
+  class LostCron {
+    constructor(pattern) { this.pattern = pattern }
+    // The timer never fired: its due time stays in the past.
+    nextRun() { return new Date('2026-11-08T19:23:00Z') }
+    arm() { armed.push(this.pattern) }
+    pause() {}
+    stop() {}
+  }
+  const history = new HistoryStore({ table: memoryTable(), logger: quiet })
+  await history.setPaused('held', true)
+  const controller = new CronJobs({
+    jobs: [
+      { name: 'lost', cron: 'p1', command: 'true' },
+      { name: 'held', cron: 'p2', command: 'true' },
+    ],
+    logger: quiet, run: async () => okResult, wake: async () => '', history,
+    record: async line => { lines.push(line) }, CronClass: LostCron, now: () => clock, watchdogMs: 0,
+  }).start()
+  assert.deepEqual(controller.checkOverdue(), ['lost'])
+  assert.deepEqual(armed, ['p1'], 'the lost timer is re-armed so the tick runs now')
+  clock = new Date('2026-11-08T19:31:00Z')
+  assert.deepEqual(controller.checkOverdue(), [], 'the same lost tick is reported once')
+  const overdue = lines.filter(line => line.event === 'overdue')
+  assert.deepEqual(overdue, [{ time: '2026-11-08T19:30:00.000Z', job: 'lost', event: 'overdue', dueAt: '2026-11-08T19:23:00.000Z', lateMs: 420000 }])
+  await controller.stop()
+})
+
+test('a tick within the grace period is not overdue', async () => {
+  const controller = new CronJobs({
+    jobs: [{ name: 'a', cron: 'p', command: 'true' }],
+    logger: quiet, run: async () => okResult, wake: async () => '',
+    CronClass: class { nextRun() { return new Date('2026-11-08T19:23:00Z') } stop() {} },
+    now: () => new Date('2026-11-08T19:23:30Z'), watchdogMs: 0,
+  }).start()
+  assert.deepEqual(controller.checkOverdue(), [])
+  await controller.stop()
+})
+
+test('the run log gets a line when the scheduler starts and stops', async () => {
+  const lines = []
+  const controller = new CronJobs({
+    jobs: [{ name: 'a', cron: '* * * * *', timeZone: 'UTC', command: 'true' }, { name: 'b', cron: '* * * * *', command: 'true', enabled: false }],
+    logger: quiet, run: async () => okResult, wake: async () => '', watchdogMs: 0,
+    record: async line => { lines.push(line) }, now: () => new Date('2026-11-08T19:40:02Z'),
+  }).start()
+  await controller.stop()
+  await controller.stop()
+  assert.deepEqual(lines, [
+    { time: '2026-11-08T19:40:02.000Z', job: null, event: 'scheduler-start', jobs: 2, scheduled: 1 },
+    { time: '2026-11-08T19:40:02.000Z', job: null, event: 'scheduler-stop' },
+  ])
 })
