@@ -302,3 +302,14 @@ test('the tools set, show and reset a job\'s delivery target', async () => {
   const garbage = await call('create', { title: 'D', prompt: 'p', cron: '0 9 * * *', timeZone: 'UTC', deliver: ':notify' })
   assert.equal(garbage.code, 'invalid_deliver')
 })
+
+test('the final answer follows a fallback model continuation into the next turn', () => {
+  const stopped = turn('m1', ['partial'], null)
+  stopped.push({ type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'hook', reason: 'dsh-fallback-models: a/x failed (SERVER); continuing on b/y' } } } })
+  assert.deepEqual(finalAnswer(stopped, 'm1'), { done: false })
+  const log = [...stopped, ...turn('notice', ['Done on the fallback'], 'completed', 2)]
+  assert.deepEqual(finalAnswer(log, 'm1'), { done: true, text: 'Done on the fallback', reason: 'completed' })
+  // Any other stop still ends the answer.
+  const user = [...turn('m1', ['partial'], null), { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } } }]
+  assert.deepEqual(finalAnswer(user, 'm1'), { done: true, text: 'partial', reason: 'aborted' })
+})

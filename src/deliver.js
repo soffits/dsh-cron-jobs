@@ -137,10 +137,22 @@ export function finalAnswer(log, messageId) {
       const parts = event.data?.message?.content ?? []
       text = parts.filter(part => part?.type === 'text').map(part => part.text).join('').trim()
     } else if (event.type === 'turn/end') {
+      // dsh-fallback-models stops a turn whose model failed and continues the
+      // work in the next turn on a fallback model; the answer is there.
+      if (continuedElsewhere(event.data?.reason)) continue
       return { done: true, text, reason: event.data?.reason?.kind }
     }
   }
   return { done: false }
+}
+
+/** Prefix of the stop reason dsh-fallback-models records on a turn it continues. */
+export const FALLBACK_REASON_PREFIX = 'dsh-fallback-models:'
+
+/** Whether a turn ended only because its work continues in the next turn. */
+function continuedElsewhere(reason) {
+  return reason?.kind === 'aborted' && reason.reason?.kind === 'hook'
+    && typeof reason.reason.reason === 'string' && reason.reason.reason.startsWith(FALLBACK_REASON_PREFIX)
 }
 
 /** An error from the channel that a retry will not fix. */
