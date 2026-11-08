@@ -19,7 +19,12 @@ export function createRpcHandler(current) {
     const input = payload !== null && typeof payload === 'object' ? payload : {}
     switch (endpoint) {
       case 'list':
-        return success({ jobs: jobs.list(), now: new Date().toISOString() })
+        return success({
+          jobs: jobs.list(),
+          historyRecords: jobs.history?.limit ?? null,
+          historyDurable: jobs.history?.durable === true,
+          now: new Date().toISOString(),
+        })
       case 'runs': {
         const runs = jobs.runs(nameOf(input))
         return runs === undefined ? notFound(input) : success({ runs })

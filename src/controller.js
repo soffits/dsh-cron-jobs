@@ -145,6 +145,7 @@ export class CronJobs {
       state,
       ...(error !== undefined ? { error } : {}),
       paused,
+      pausedAt: this.history?.state(job.name).pausedAt ?? null,
       cron: job.cron,
       timeZone: job.timeZone || null,
       command: job.command,
@@ -157,7 +158,6 @@ export class CronJobs {
       nextRunAt: next ? next.toISOString() : null,
       running: runner.current,
       lastRun: this.history?.lastRun(job.name) ?? null,
-      historyDurable: this.history?.durable === true,
       scheduled: timer !== undefined,
     }
   }
