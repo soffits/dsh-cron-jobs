@@ -6,7 +6,13 @@ DSH's built-in Schedule delivers a prompt to an agent session, so every tick sta
 
 ## Install
 
-Clone the repository, install its dependencies, and install the directory as a bundle:
+Install it into the `web` profile straight from GitHub:
+
+```sh
+dsh plugin --profile web add github:soffits/dsh-cron-jobs
+```
+
+Then restart `dsh web` (or enable it on the Plugins page). To work on it locally instead, clone the repository, install its dependencies, and install the directory as a bundle:
 
 ```sh
 git clone https://github.com/soffits/dsh-cron-jobs.git
