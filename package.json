@@ -1,11 +1,12 @@
 {
   "name": "dsh-cron-jobs",
-  "version": "0.3.0",
-  "description": "Cron-scheduled shell commands for DeepSeek Harness, with an optional gate that wakes an agent only when there is something to do, and a Cron tasks page in the Web GUI.",
+  "version": "0.4.0",
+  "description": "Scheduled jobs for DeepSeek Harness: shell commands and agent prompts on cron, RRULE or one-time schedules, a gate that wakes an agent only when there is something to do, tools to manage jobs from a conversation, and a Cron tasks page in the Web GUI.",
   "type": "module",
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
+    "./tools": "./tools.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
@@ -13,6 +14,7 @@
   },
   "files": [
     "index.js",
+    "tools.js",
     "client.js",
     "src/*.js",
     "cordis.patch.yml",
@@ -42,9 +44,10 @@
   },
   "scripts": {
     "test": "node --test \"test/*.test.js\"",
-    "check": "for f in index.js client.js src/*.js test/*.js; do node --check \"$f\" || exit 1; done"
+    "check": "for f in index.js tools.js client.js src/*.js test/*.js; do node --check \"$f\" || exit 1; done"
   },
   "dependencies": {
+    "@deepseek-ai/dsh-util-time": "0.2.2-rc.1",
     "@deepseek-ai/schemastery": "^3.18.5",
     "croner": "^10.0.1",
     "zod": "^4.6.7"

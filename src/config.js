@@ -12,9 +12,10 @@ const Model = z.object({
 
 const Agent = z.object({
   prompt: z.string().role('textarea')
-    .description('Prompt sent to a new agent session when the command asks for it. Leave empty for a plain job.'),
+    .description('Prompt sent to an agent session when the command asks for it, or at every run of a job without a command. Leave empty for a plain job.'),
   preset: z.string().description('Agent preset of the new session. The host default when empty.'),
   cwd: z.string().description('Working directory of the woken session; the session joins the workspace registered there. Empty: the plugin\'s defaultAgentCwd, then the job\'s cwd, then the host default.'),
+  sessionId: z.string().description('Send the prompt into this existing session instead of opening a new one. Empty: open a new session.'),
   model: Model,
   autoArchive: z.boolean().description('Archive the woken session once its turn ends, unless it is pinned or a person has sent it a message (such a session is also never reused). The plugin\'s autoArchive when unset.'),
   reuseWithinHours: z.number().min(0).description('Send the prompt into this job\'s previous woken session instead of opening a new one, when that session was opened within this many hours. 0 always opens a new session. The plugin\'s reuseWithinHours when unset.'),
@@ -22,9 +23,11 @@ const Agent = z.object({
 
 const Job = z.object({
   name: z.string().required().description('Job name, used in logs and session titles.'),
-  cron: z.string().required().description('Cron expression (5 fields, or 6 with seconds first).'),
-  timeZone: z.string().description('IANA time zone for the cron expression, such as Europe/Berlin. The host zone when empty.'),
-  command: z.string().role('textarea').required().description('Shell command, run with bash (or sh when bash is missing).'),
+  cron: z.string().description('Cron expression (5 fields, or 6 with seconds first). Set exactly one of cron, rrule and at.'),
+  rrule: z.string().role('textarea').description('RFC 5545 schedule: a DTSTART line and an RRULE line, such as "DTSTART;TZID=Europe/Berlin:20260901T080000" and "RRULE:FREQ=WEEKLY;BYDAY=MO". The zone comes from DTSTART.'),
+  at: z.string().description('Run once at this time: ISO 8601 with an offset, or a local date-time read in timeZone.'),
+  timeZone: z.string().description('IANA time zone for the cron expression or an at without offset, such as Europe/Berlin. The host zone when empty (an at without offset needs it).'),
+  command: z.string().role('textarea').description('Shell command, run with bash (or sh when bash is missing). Leave empty for an agent-only job, which sends agent.prompt at every run.'),
   cwd: z.string().description('Working directory of the command. The host process directory when empty.'),
   timeoutSeconds: z.natural().default(DEFAULT_TIMEOUT_SECONDS)
     .description('Stop the command after this many seconds. 0 means no limit.'),

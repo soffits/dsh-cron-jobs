@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { storedJobSchema } from './store.js'
 
 /** Default number of runs kept per job. */
 export const DEFAULT_HISTORY_RECORDS = 50
@@ -27,6 +28,8 @@ const runSchema = z.object({
   queued: z.boolean().optional(),
   // Why a reuse candidate was not used and a new session was opened.
   reuseNote: z.string().optional(),
+  // The prompt went to the job's target session (an existing session, or the one a new_once job opened).
+  targeted: z.boolean().optional(),
   // Auto-archive of the woken session: pending until its turn ends, then
   // archived, kept (see archiveNote), or superseded (a later run reused it).
   archive: z.enum(['pending', 'archived', 'kept', 'superseded']).optional(),
@@ -43,17 +46,20 @@ const jobStateSchema = z.object({
 })
 
 /**
- * Storage domain for the plugin's own state, one record per job name.
- * The `single` layout keeps every job in one unit, so job names need no
+ * Storage domain for the plugin's own state: `jobs` holds run history and
+ * pause state, one record per job (config jobs by name, stored jobs by id);
+ * `tasks` holds the jobs created with the model-facing tools (see store.js).
+ * The `single` layout keeps everything in one unit, so keys need no
  * escaping; a record that fails validation is backed up and skipped instead
- * of blocking the whole domain.
+ * of blocking the whole domain. A table missing from an older file loads as
+ * empty, so adding `tasks` needed no version change.
  */
 export const historyDomain = Object.freeze({
   name: 'cron_jobs',
   version: 1,
   layout: 'single',
   invalidRecords: 'backup-and-skip',
-  tables: { jobs: { valueSchema: jobStateSchema } },
+  tables: { jobs: { valueSchema: jobStateSchema }, tasks: { valueSchema: storedJobSchema } },
 })
 
 /** @typedef {z.infer<typeof runSchema>} Run */
@@ -75,9 +81,11 @@ export class HistoryStore {
    * @param {{ warn: Function }} options.logger
    * @param {() => Promise<void>} [options.close] - Releases the backing storage.
    * @param {boolean} [options.durable] - Whether the table survives a restart.
+   * @param {object} [options.tasks] - Table of stored jobs, see store.js; in memory when omitted.
    */
-  constructor({ table, limit = DEFAULT_HISTORY_RECORDS, logger, close = async () => {}, durable = false }) {
+  constructor({ table, limit = DEFAULT_HISTORY_RECORDS, logger, close = async () => {}, durable = false, tasks = memoryTable() }) {
     this.table = table
+    this.tasks = tasks
     this.limit = limit
     this.logger = logger
     this.closeTable = close
@@ -123,8 +131,9 @@ export class HistoryStore {
     await this.update(name, id, fields)
   }
 
-  /** Merge fields into a saved run; a run already dropped is left alone. */
+  /** Merge fields into a saved run; a run already dropped, or a deleted job, is left alone. */
   async update(name, id, fields) {
+    if (this.table.get(name) === undefined) return
     await this.change(name, state => ({
       ...state,
       runs: state.runs.map(run => (run.id === id ? { ...run, ...clean(fields) } : run)),
@@ -159,6 +168,17 @@ export class HistoryStore {
     }
   }
 
+  /** Drop a deleted job's history and pause state. */
+  async forget(name) {
+    const write = this.queue.then(async () => {
+      if (this.table.get(name) !== undefined) await this.table.delete(name)
+    }).catch((error) => {
+      this.logger.warn('[%s] run history not removed: %s', name, error instanceof Error ? error.message : String(error))
+    })
+    this.queue = write
+    return write
+  }
+
   /** Wait for queued writes, then release the backing storage. */
   async close() {
     await this.queue
@@ -185,6 +205,7 @@ export function memoryTable() {
     get: key => map.get(key),
     entries: () => map.entries(),
     put: async (key, value) => { map.set(key, value) },
+    delete: async (key) => map.delete(key),
   }
 }
 
@@ -211,7 +232,7 @@ export async function openHistory(storageDomain, { limit, logger, signal, retryM
     try {
       const domain = await storageDomain.open(historyDomain)
       const store = new HistoryStore({
-        table: domain.table('jobs'), limit, logger, durable: true, close: () => domain.close(),
+        table: domain.table('jobs'), tasks: domain.table('tasks'), limit, logger, durable: true, close: () => domain.close(),
       })
       await store.markInterrupted()
       return store

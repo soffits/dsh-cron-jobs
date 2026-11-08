@@ -72,17 +72,20 @@ export async function openAgentSession(ctx, { text, title, agentPreset, cwd, mod
  * controller's archived-session gate), so an archived session is unarchived
  * first, and only when `mayUnarchive` is set: the caller archives it again
  * once the turn is over. A session a person has taken over or pinned (see
- * {@link userHold}) is refused, so a job never barges into a conversation.
+ * {@link userHold}) is refused, so a reused session never barges into a
+ * conversation, unless `ignoreHold` is set: a job whose target is that
+ * session (such as a reminder created from it) is meant to post there.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {object} request
  * @param {string} request.sessionId
  * @param {string} request.text
  * @param {boolean} [request.mayUnarchive]
+ * @param {boolean} [request.ignoreHold] - Deliver even to a pinned session or one a person uses.
  * @returns {Promise<{ sessionId: string, queued: boolean, unarchived: boolean }>}
  *   `queued`: the session was busy and the message waits for its next turn.
  */
-export async function deliverToSession(ctx, { sessionId, text, mayUnarchive = false }) {
+export async function deliverToSession(ctx, { sessionId, text, mayUnarchive = false, ignoreHold = false }) {
   const controller = ctx.get('sessionController')
   const sessions = ctx.get('sessions')
   if (controller === undefined || sessions === undefined) {
@@ -92,7 +95,7 @@ export async function deliverToSession(ctx, { sessionId, text, mayUnarchive = fa
     const resolved = await controller.resolveAgent(sessionId)
     if ('error' in resolved) throw resolved.error
     const { agent } = resolved
-    const hold = userHold(ctx, sessionId, agent.session)
+    const hold = ignoreHold ? undefined : userHold(ctx, sessionId, agent.session)
     if (hold !== undefined) throw new Error(`the session is in use (${hold})`)
     const registry = ctx.get('workspaceRegistry')
     const archived = registry?.archivedSessionIds?.includes(sessionId) === true

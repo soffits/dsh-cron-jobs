@@ -15,7 +15,7 @@
 export const CHANNEL = '/api/dsh-cron-jobs'
 
 /** Endpoints the page calls, each served at `${CHANNEL}/<endpoint>`. */
-export const ENDPOINTS = Object.freeze(['list', 'runs', 'run', 'pause'])
+export const ENDPOINTS = Object.freeze(['list', 'runs', 'run', 'pause', 'delete'])
 
 /** DSH answers exact `/api` routes only for the owner, so their caller is the owner. */
 const OWNER = Object.freeze({ principal: Object.freeze({ kind: 'owner' }) })
@@ -75,7 +75,19 @@ export function createRpcHandler(current) {
       case 'pause': {
         if (typeof input.paused !== 'boolean') return failure('bad-request', '`paused` must be true or false.')
         const result = await jobs.setPaused(nameOf(input), input.paused)
-        return result.ok ? success({ job: result.job }) : notFound(input)
+        if (result.ok) return success({ job: result.job })
+        if (result.code === 'ended') return failure('ended', 'This job has no more runs.')
+        return notFound(input)
+      }
+      case 'delete': {
+        // Only jobs created with the tools; config jobs are changed in the config.
+        try {
+          return success(await jobs.remove(nameOf(input)))
+        } catch (error) {
+          if (error?.code === 'read_only') return failure('read-only', 'This job is defined in the plugin config; remove it there.')
+          if (error?.code === 'not_found') return notFound(input)
+          throw error
+        }
       }
       default:
         return failure('not-found', `Unknown endpoint ${JSON.stringify(endpoint)}.`)
@@ -83,7 +95,9 @@ export function createRpcHandler(current) {
   }
 }
 
+/** The job's id (for config jobs, its name); older pages send `name`. */
 function nameOf(input) {
+  if (typeof input.id === 'string') return input.id
   return typeof input.name === 'string' ? input.name : ''
 }
 
@@ -96,5 +110,5 @@ function failure(code, message) {
 }
 
 function notFound(input) {
-  return failure('not-found', `No job named ${JSON.stringify(nameOf(input))}.`)
+  return failure('not-found', `No job ${JSON.stringify(nameOf(input))}.`)
 }

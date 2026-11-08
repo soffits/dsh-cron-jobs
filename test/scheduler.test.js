@@ -72,5 +72,5 @@ test('config defaults', () => {
   assert.deepEqual(Config({}), { jobs: [], autoArchive: true, reuseWithinHours: 0, historyRecords: 50 })
   assert.equal(config.jobs[0].agent.autoArchive, undefined)
   assert.equal(config.jobs[0].agent.reuseWithinHours, undefined)
-  assert.throws(() => Config({ jobs: [{ name: 'a', command: 'true' }] }), /cron/)
+  assert.throws(() => Config({ jobs: [{ cron: '* * * * *', command: 'true' }] }), /name/)
 })

@@ -23,6 +23,28 @@ export function isGated(job) {
   return typeof job.agent?.prompt === 'string' && job.agent.prompt.trim() !== ''
 }
 
+/** Whether a job runs a command. */
+export function hasCommand(job) {
+  return typeof job.command === 'string' && job.command.trim() !== ''
+}
+
+/**
+ * What a job does: `command` (a plain command), `gate` (a command that wakes
+ * an agent when its output asks), or `agent` (no command: every run wakes).
+ * Undefined for a job with neither a command nor a prompt.
+ * @param {Job} job
+ * @returns {'command' | 'gate' | 'agent' | undefined}
+ */
+export function jobKind(job) {
+  if (hasCommand(job)) return isGated(job) ? 'gate' : 'command'
+  return isGated(job) ? 'agent' : undefined
+}
+
+/** Key of a job's history and pause state: its id, which for config jobs is the name. */
+export function jobKey(job) {
+  return job.id ?? job.name
+}
+
 /**
  * The model chosen for a job's woken sessions, or undefined to use the preset
  * or host default. Needs both a provider and a model.
@@ -53,17 +75,20 @@ export function agentSettings(job, defaults = {}) {
 }
 
 /**
- * Runs one configured job per tick. A tick that arrives while the previous run
- * of the same job is still going is skipped.
+ * Runs one job per tick. A tick that arrives while the previous run of the
+ * same job is still going is skipped.
  *
  * @typedef {object} Job
+ * @property {string} [id] - Stored jobs: their id. Config jobs: the name (the default).
  * @property {string} name
- * @property {string} cron
+ * @property {'config' | 'tool'} [source]
+ * @property {string} [cron]
  * @property {string} [timeZone]
- * @property {string} command
+ * @property {string} [command] - Missing for an agent-only job.
  * @property {string} [cwd]
  * @property {number} [timeoutSeconds]
- * @property {{ prompt?: string, preset?: string, cwd?: string, model?: { provider?: string, model?: string, reasoningEffort?: string }, autoArchive?: boolean, reuseWithinHours?: number }} [agent]
+ * @property {{ prompt?: string, preset?: string, cwd?: string, sessionId?: string, model?: { provider?: string, model?: string, reasoningEffort?: string }, autoArchive?: boolean, reuseWithinHours?: number }} [agent]
+ * @property {{ kind: 'new' } | { kind: 'new_once', sessionId?: string } | { kind: 'session', sessionId: string }} [target] - Where the prompt goes; a new session when omitted.
  */
 export class JobRunner {
   /**
@@ -71,7 +96,8 @@ export class JobRunner {
    * @param {object} deps
    * @param {(options: object) => Promise<import('./command.js').CommandResult>} deps.run - Runs a command.
    * @param {(request: { text: string, title: string, agentPreset?: string, cwd?: string, model?: object }) => Promise<string>} deps.wake - Opens an agent session; resolves to its id.
-   * @param {(request: { sessionId: string, text: string, mayUnarchive: boolean }) => Promise<{ queued?: boolean }>} [deps.reuse] - Sends the prompt into an existing session (see session.js deliverToSession); without it every wake opens a new session.
+   * @param {(request: { sessionId: string, text: string, mayUnarchive: boolean, ignoreHold?: boolean }) => Promise<{ queued?: boolean }>} [deps.reuse] - Sends the prompt into an existing session (see session.js deliverToSession); without it every wake opens a new session.
+   * @param {(sessionId: string) => Promise<void>} [deps.keepSession] - Saves the session a new_once job opened, so later runs go to it.
    * @param {(sessionId: string, options: { signal?: AbortSignal, isLatest: () => boolean, lock: Function }) => Promise<{ archive: string, note?: string }>} [deps.settle] - Archives a session after its turn (see session.js archiveWhenIdle); without it nothing is archived.
    * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number }} [deps.defaults] - Plugin-level agent settings.
    * @param {{ info: Function, warn: Function }} deps.logger
@@ -80,9 +106,10 @@ export class JobRunner {
    * @param {{ begin: Function, finish: Function }} [deps.history] - Saved run history (see history.js).
    * @param {() => Date} [deps.now]
    */
-  constructor(job, { run, wake, reuse, settle, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
+  constructor(job, { run, wake, reuse, keepSession, settle, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
     this.job = job
     this.reuse = reuse
+    this.keepSession = keepSession
     this.settle = settle
     this.defaults = defaults
     /** Latest run that sent a prompt to each session; only that run archives it. */
@@ -127,7 +154,7 @@ export class JobRunner {
       logger.info('[%s] start%s', job.name, trigger === 'manual' ? ' (run now)' : '')
       // A start line on its own shows a run that never finished (DSH stopped mid-run).
       await this.record({ time: firedAt.toISOString(), job: job.name, event: 'start', ...(trigger === 'manual' ? { trigger } : {}) })
-      runId = await this.history.begin(job.name, { trigger, startedAt: firedAt.toISOString() })
+      runId = await this.history.begin(jobKey(job), { trigger, startedAt: firedAt.toISOString() })
       outcome = await this.runOnce(firedAt, r => { result = r })
       return outcome
     } catch (error) {
@@ -151,7 +178,7 @@ export class JobRunner {
         } : {}),
       })
       if (runId !== undefined) {
-        await this.history.finish(job.name, runId, {
+        await this.history.finish(jobKey(job), runId, {
           status: outcome.status,
           endedAt: endedAt.toISOString(),
           durationMs: result?.durationMs ?? (endedAt.getTime() - firedAt.getTime()),
@@ -160,6 +187,7 @@ export class JobRunner {
           reused: outcome.reused,
           queued: outcome.queued,
           reuseNote: outcome.reuseNote,
+          targeted: outcome.targeted,
           archive: outcome.archive,
           error: thrown ?? outcome.error ?? result?.error,
           ...(result ? {
@@ -182,34 +210,48 @@ export class JobRunner {
    */
   async runOnce(firedAt, keep) {
     const { job, logger } = this
-    const result = await this.run({
-      command: job.command,
-      cwd: job.cwd || undefined,
-      timeoutMs: (job.timeoutSeconds ?? 0) * 1000,
-      signal: this.signal,
-    })
-    keep(result)
-    this.logResult(result)
-    if (!result.ok) return { status: 'failed' }
-    if (!isGated(job)) return { status: 'done' }
+    let result
+    if (hasCommand(job)) {
+      result = await this.run({
+        command: job.command,
+        cwd: job.cwd || undefined,
+        timeoutMs: (job.timeoutSeconds ?? 0) * 1000,
+        signal: this.signal,
+      })
+      keep(result)
+      this.logResult(result)
+      if (!result.ok) return { status: 'failed' }
+      if (!isGated(job)) return { status: 'done' }
 
-    const decision = decideWake(result)
-    if (!decision.wake) {
-      logger.info('[%s] not waking agent: %s', job.name, decision.reason)
-      return { status: 'idle' }
+      const decision = decideWake(result)
+      if (!decision.wake) {
+        logger.info('[%s] not waking agent: %s', job.name, decision.reason)
+        return { status: 'idle' }
+      }
+    } else if (!isGated(job)) {
+      return { status: 'failed', error: 'the job has neither a command nor a prompt' }
     }
     const localTime = formatLocalTime(firedAt, job.timeZone || undefined)
     const settings = agentSettings(job, this.defaults)
     const text = buildAgentPrompt({
       jobName: job.name,
+      ...(job.source === 'tool' ? { jobId: jobKey(job) } : {}),
       prompt: job.agent.prompt,
-      stdout: result.stdout,
-      droppedBytes: result.stdoutDropped,
+      ...(result ? { stdout: result.stdout, droppedBytes: result.stdoutDropped } : {}),
       firedAt: localTime,
     })
+    const target = job.target ?? { kind: 'new' }
+    if (target.kind === 'session') return this.sendToTarget(target.sessionId, text, { mayUnarchive: true })
+
     const archive = settings.autoArchive && this.settle !== undefined ? { archive: 'pending' } : {}
     let reuseNote
-    const previous = this.reusableRun(settings, firedAt)
+    if (target.kind === 'new_once' && target.sessionId) {
+      const sent = await this.sendToTarget(target.sessionId, text, { mayUnarchive: settings.autoArchive, archive })
+      if (sent.status === 'woke') return sent
+      reuseNote = `session ${target.sessionId} not reached: ${sent.error}`
+      logger.warn('[%s] %s; opening a new session', job.name, reuseNote)
+    }
+    const previous = target.kind === 'new' ? this.reusableRun(settings, firedAt) : undefined
     if (previous !== undefined) {
       try {
         const sent = await this.withSessionLock(previous.sessionId, async () => {
@@ -243,10 +285,18 @@ export class JobRunner {
       const sessionId = typeof opened === 'string' ? opened : opened.sessionId
       this.latestRun.set(sessionId, null)
       logger.info('[%s] woke agent in session %s', job.name, sessionId)
+      if (target.kind === 'new_once') {
+        try {
+          await this.keepSession?.(sessionId)
+        } catch (error) {
+          logger.warn('[%s] session %s not saved as the job\'s session: %s', job.name, sessionId, describeError(error))
+        }
+      }
       return {
         status: 'woke',
         sessionId,
         sessionOpenedAt: firedAt.toISOString(),
+        ...(target.kind === 'new_once' ? { targeted: true } : {}),
         ...(reuseNote ? { reuseNote } : {}),
         ...archive,
       }
@@ -254,6 +304,31 @@ export class JobRunner {
       const reason = describeError(error)
       logger.warn('[%s] could not wake agent: %s', job.name, reason)
       return { status: 'wake-failed', error: reason, ...(reuseNote ? { reuseNote } : {}) }
+    }
+  }
+
+  /**
+   * Send the prompt to the job's target session: an existing session the job
+   * names, or the one a new_once job opened. Delivered even when a person
+   * uses the session; that is what the target is for. An archived session is
+   * unarchived first when `mayUnarchive` is set.
+   * @returns {Promise<object>} The run outcome; `wake-failed` with the reason when not delivered.
+   */
+  async sendToTarget(sessionId, text, { mayUnarchive, archive = {} }) {
+    const { job, logger } = this
+    if (this.reuse === undefined) return { status: 'wake-failed', error: 'this host cannot deliver to existing sessions' }
+    try {
+      const sent = await this.withSessionLock(sessionId, async () => {
+        const delivered = await this.reuse({ sessionId, text, mayUnarchive, ignoreHold: true })
+        this.latestRun.set(sessionId, null)
+        return delivered
+      })
+      logger.info('[%s] sent the prompt to its session %s%s', job.name, sessionId, sent?.queued ? ' (queued behind its current turn)' : '')
+      return { status: 'woke', sessionId, targeted: true, ...(sent?.queued ? { queued: true } : {}), ...archive }
+    } catch (error) {
+      const reason = describeError(error)
+      logger.warn('[%s] could not send the prompt to session %s: %s', job.name, sessionId, reason)
+      return { status: 'wake-failed', sessionId, error: reason }
     }
   }
 
@@ -266,7 +341,7 @@ export class JobRunner {
    */
   reusableRun(settings, firedAt) {
     if (!(settings.reuseWithinHours > 0) || this.reuse === undefined) return undefined
-    const previous = this.history.runs(this.job.name).find(run => run.sessionId && run.status === 'woke')
+    const previous = this.history.runs(jobKey(this.job)).find(run => run.sessionId && run.status === 'woke' && !run.targeted)
     if (previous === undefined) return undefined
     const opened = Date.parse(previous.sessionOpenedAt ?? previous.startedAt)
     if (!Number.isFinite(opened)) return undefined
@@ -293,10 +368,10 @@ export class JobRunner {
       if (this.latestRun.get(sessionId) === runId) this.latestRun.delete(sessionId)
       if (result.archive === 'archived') logger.info('[%s] archived session %s', job.name, sessionId)
       else if (result.archive === 'kept') logger.info('[%s] kept session %s: %s', job.name, sessionId, result.note)
-      await this.history.update(job.name, runId, { archive: result.archive, archiveNote: result.note })
+      await this.history.update(jobKey(job), runId, { archive: result.archive, archiveNote: result.note })
     })().catch((error) => {
       logger.warn('[%s] archive of session %s failed: %s', job.name, sessionId, describeError(error))
-      if (!this.signal?.aborted) return this.history.update(job.name, runId, { archive: 'kept', archiveNote: describeError(error) })
+      if (!this.signal?.aborted) return this.history.update(jobKey(job), runId, { archive: 'kept', archiveNote: describeError(error) })
     }).finally(() => this.settling.delete(watch))
     this.settling.add(watch)
     return watch
@@ -310,10 +385,10 @@ export class JobRunner {
   async resumeArchives() {
     if (this.settle === undefined) return
     const seen = new Set()
-    for (const run of this.history.runs(this.job.name)) {
+    for (const run of this.history.runs(jobKey(this.job))) {
       if (run.archive !== 'pending' || !run.sessionId) continue
       if (seen.has(run.sessionId)) {
-        await this.history.update(this.job.name, run.id, { archive: 'superseded' })
+        await this.history.update(jobKey(this.job), run.id, { archive: 'superseded' })
         continue
       }
       seen.add(run.sessionId)
