@@ -109,7 +109,7 @@ If the storage domain cannot be opened, jobs still run and the page says that hi
 
 ### How the page talks to the Host
 
-The page calls the Host over DSH's Connection service on the channel `/dsh-cron-jobs`. Connection authenticates every request like the rest of the Web GUI, and the plugin answers only the owner, since Run now executes shell commands. The page's styles use only DSH theme tokens, and its layout and icons are copied from DSH's own pages (DSH is MIT-licensed), so it follows light and dark themes and the interface language (English and Chinese).
+The page calls the Host with POST requests to `/api/dsh-cron-jobs/<endpoint>`, exact routes the plugin adds to DSH's shared `/api` channel. They are authenticated like the rest of the Web GUI, and DSH lets only the owner reach them, since Run now executes shell commands. The page's styles use only DSH theme tokens, and its layout and icons are copied from DSH's own pages (DSH is MIT-licensed), so it follows light and dark themes and the interface language (English and Chinese).
 
 ## Wake rule for gated jobs
 

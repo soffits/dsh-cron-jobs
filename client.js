@@ -3,7 +3,7 @@
  *
  * Plain JavaScript in DSH's Client module format (no build step). React
  * comes from the page's module table. The page talks to the Host half over
- * the authenticated Connection channel `/dsh-cron-jobs` (see src/rpc.js).
+ * authenticated routes under DSH's `/api` channel (see src/rpc.js).
  *
  * Layout, spacing and colours follow DSH's own Automation tasks page
  * (@deepseek-ai/dsh-client-ui-schedule); styles use only the host theme
@@ -18,7 +18,8 @@ window.__ModuleLoader__.load({
 
     const NS = 'dsh-cron-jobs'
     const PANEL = 'dsh-cron-jobs'
-    const CHANNEL = '/dsh-cron-jobs'
+    // Relative to the page, like DSH's own API calls, so a sub-path deployment works.
+    const API_BASE = 'api/dsh-cron-jobs/'
     const POLL_MS = 5000
     const STYLE_ID = 'dsh-cron-jobs'
 
@@ -765,7 +766,7 @@ window.__ModuleLoader__.load({
     // ---------------------------------------------------------------- plugin
 
     return {
-      inject: ['slots', 'locale', 'connection'],
+      inject: ['slots', 'locale'],
       apply(ctx) {
         ctx.effect(() => {
           const disposers = [ctx.locale.register(NS, 'en', en), ctx.locale.register(NS, 'zh', zh)]
@@ -786,7 +787,14 @@ window.__ModuleLoader__.load({
         /** One call to the Host half; a carrier failure becomes an error result. */
         const call = async (endpoint, payload) => {
           try {
-            return await ctx.connection.rpc.call(CHANNEL, endpoint, payload)
+            const response = await fetch(API_BASE + endpoint, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(payload ?? {}),
+            })
+            const type = response.headers.get('content-type') ?? ''
+            if (!type.includes('application/json')) throw new Error(`HTTP ${response.status} for ${endpoint}`)
+            return await response.json()
           } catch (error) {
             return { ok: false, error: { code: 'transport', message: error instanceof Error ? error.message : String(error) } }
           }

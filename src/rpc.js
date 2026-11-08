@@ -1,11 +1,47 @@
 /**
- * The Web page's channel to the Host, carried by DSH's Connection service:
- * the page calls `ctx.connection.rpc.call(CHANNEL, endpoint, payload)` and
- * the Host answers through `ctx.connection.rpc.handle(CHANNEL, handler)`.
- * Connection authenticates every request; this handler additionally accepts
- * only the owner, because the endpoints run shell commands.
+ * The Web page's channel to the Host: one exact Fetch route per endpoint on
+ * DSH's shared `/api` channel, registered with `ctx.connection.fetch.register`.
+ * The page POSTs a JSON payload to `api/dsh-cron-jobs/<endpoint>` and gets
+ * the handler's `{ ok, value | error }` result back as JSON.
+ *
+ * Not `ctx.connection.rpc.handle`: in DSH 0.2.x that call looks up the web
+ * server from the Connection plugin's own context, which does not inject it,
+ * so it throws for every outside plugin and no route is mounted (the page
+ * then got HTTP 405 from the static file fallback). Exact `/api` routes sit
+ * behind the same authentication as the rest of the Web GUI, and DSH lets
+ * only the owner reach them, which this plugin needs because the endpoints
+ * run shell commands.
  */
-export const CHANNEL = '/dsh-cron-jobs'
+export const CHANNEL = '/api/dsh-cron-jobs'
+
+/** Endpoints the page calls, each served at `${CHANNEL}/<endpoint>`. */
+export const ENDPOINTS = Object.freeze(['list', 'runs', 'run', 'pause'])
+
+/** DSH answers exact `/api` routes only for the owner, so their caller is the owner. */
+const OWNER = Object.freeze({ principal: Object.freeze({ kind: 'owner' }) })
+
+/**
+ * Exact Fetch routes for `ctx.connection.fetch.register`.
+ * @param {ReturnType<typeof createRpcHandler>} handler
+ * @returns {{ path: string, methods: ['POST'], requestBody: 'buffered', fetch: (request: Request) => Promise<Response> }[]}
+ */
+export function createRoutes(handler) {
+  return ENDPOINTS.map(endpoint => ({
+    path: `${CHANNEL}/${endpoint}`,
+    methods: ['POST'],
+    requestBody: 'buffered',
+    async fetch(request) {
+      let payload
+      try {
+        const text = await request.text()
+        payload = text === '' ? {} : JSON.parse(text)
+      } catch {
+        return Response.json(failure('bad-request', 'The request body is not JSON.'), { status: 400 })
+      }
+      return Response.json(await handler(endpoint, payload, request.signal, OWNER))
+    },
+  }))
+}
 
 /**
  * @param {() => import('./controller.js').CronJobs | undefined} current - The running jobs, or undefined while starting or stopped.

@@ -3,7 +3,7 @@
  * the Host process, and optionally open an agent session when a gate
  * command's output asks for one. Run history and pause state are kept in
  * DSH's storage domain service; the "Cron tasks" Web page (client.js) reads
- * and controls them over an authenticated Connection channel.
+ * and controls them over authenticated routes on DSH's /api channel.
  */
 import { Config } from './src/config.js'
 import { runCommand } from './src/command.js'
@@ -11,7 +11,7 @@ import { openAgentSession } from './src/session.js'
 import { CronJobs } from './src/controller.js'
 import { createRunLog } from './src/runlog.js'
 import { openHistory } from './src/history.js'
-import { CHANNEL, createRpcHandler } from './src/rpc.js'
+import { createRoutes, createRpcHandler } from './src/rpc.js'
 
 export const name = 'dsh-cron-jobs'
 export const inject = ['storageDomain']
@@ -58,8 +58,9 @@ export function apply(ctx, config) {
     }
   }, 'cron-jobs.schedule()')
 
-  // The Web page's channel; present only in hosts that serve the Web GUI.
+  // The Web page's routes; present only in hosts that serve the Web GUI.
+  // Exact /api Fetch routes, not connection.rpc.handle: see src/rpc.js.
   ctx.inject(['connection', 'webServer'], (sub) => {
-    sub.connection.rpc.handle(CHANNEL, createRpcHandler(() => current))
+    for (const route of createRoutes(createRpcHandler(() => current))) sub.connection.fetch.register(route)
   })
 }

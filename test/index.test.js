@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, Config, inject, name } from '../index.js'
 import { memoryTable } from '../src/history.js'
-import { CHANNEL } from '../src/rpc.js'
+import { CHANNEL, ENDPOINTS } from '../src/rpc.js'
 
 function makeCtx() {
   const effects = []
@@ -27,7 +27,7 @@ function makeCtx() {
     get: () => undefined,
     inject: (deps, callback) => {
       injected.push(deps)
-      callback({ connection: { rpc: { handle: (channel, handler) => handlers.set(channel, handler) } } })
+      callback({ connection: { fetch: { register: route => handlers.set(route.path, route) } } })
     },
   }
   return { ctx, effects, lines, opened, closed, handlers, injected }
@@ -41,12 +41,14 @@ test('apply opens history, arms jobs, serves the page channel and cleans up', as
   assert.equal(effects.length, 1)
   assert.deepEqual(injected, [['connection', 'webServer']])
 
-  const handler = handlers.get(CHANNEL)
-  const owner = { principal: { kind: 'owner' } }
+  assert.deepEqual([...handlers.keys()], ENDPOINTS.map(endpoint => `${CHANNEL}/${endpoint}`))
+  const route = handlers.get(`${CHANNEL}/list`)
+  assert.deepEqual(route.methods, ['POST'])
+  const handler = async endpoint => (await handlers.get(`${CHANNEL}/${endpoint}`).fetch(new Request('http://dsh.test/', { method: 'POST', body: '{}' }))).json()
   // The channel answers once the history store is open and the jobs are armed.
   let listed
   for (let i = 0; i < 50; i++) {
-    listed = await handler('list', {}, undefined, owner)
+    listed = await handler('list')
     if (listed.ok) break
     await new Promise(resolve => setTimeout(resolve, 10))
   }
@@ -57,7 +59,7 @@ test('apply opens history, arms jobs, serves the page channel and cleans up', as
 
   await effects[0]()
   assert.deepEqual(closed, ['cron_jobs'])
-  const after = await handler('list', {}, undefined, owner)
+  const after = await handler('list')
   assert.equal(after.ok, false)
   assert.equal(after.error.code, 'cron-jobs/unavailable')
 })
