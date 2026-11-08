@@ -97,7 +97,9 @@ test('a woken gated run records the session id, a skipped tick records skipped',
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(await runner.tick(), { status: 'skipped' })
   release()
-  assert.deepEqual(await first, { status: 'woke', sessionId: 'session-9' })
+  const woke = await first
+  assert.equal(woke.status, 'woke')
+  assert.equal(woke.sessionId, 'session-9')
   assert.deepEqual(entries.map(e => e.event), ['start', 'skipped', 'end'])
   assert.equal(entries[2].sessionId, 'session-9')
 })

@@ -1,5 +1,5 @@
 import { Cron } from 'croner'
-import { JobRunner, agentModel, isGated } from './job.js'
+import { JobRunner, agentModel, agentSettings, isGated } from './job.js'
 
 /**
  * Owns every configured job: one runner per unique job name, a cron timer for
@@ -21,14 +21,18 @@ export class CronJobs {
    * @param {{ info: Function, warn: Function, error: Function }} options.logger
    * @param {Function} options.run - Command runner, see {@link import('./command.js').runCommand}.
    * @param {Function} options.wake - Agent session opener.
+   * @param {Function} [options.reuse] - Sends a prompt into an existing session.
+   * @param {Function} [options.settle] - Archives a session after its turn.
+   * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number }} [options.defaults] - Plugin-level agent settings.
    * @param {AbortSignal} [options.signal] - Stops running commands when aborted.
    * @param {(entry: object) => Promise<void>} [options.record] - Run log, see runlog.js.
    * @param {import('./history.js').HistoryStore} [options.history] - Saved runs and pause state.
    * @param {typeof Cron} [options.CronClass] - Replaceable for tests.
    * @param {() => Date} [options.now]
    */
-  constructor({ jobs, logger, run, wake, signal, record, history, CronClass = Cron, now = () => new Date() }) {
+  constructor({ jobs, logger, run, wake, reuse, settle, defaults = {}, signal, record, history, CronClass = Cron, now = () => new Date() }) {
     this.logger = logger
+    this.defaults = defaults
     this.history = history
     this.CronClass = CronClass
     this.now = now
@@ -41,13 +45,17 @@ export class CronJobs {
         logger.error('[%s] duplicate job name; this copy is not scheduled', job.name)
         continue
       }
-      const runner = new JobRunner(job, { run, wake, logger, signal, record, history, now })
+      const runner = new JobRunner(job, { run, wake, reuse, settle, defaults, logger, signal, record, history, now })
       this.entries.set(job.name, { job, runner })
     }
   }
 
   /** Arm the timers of enabled jobs; paused jobs start held. */
   start() {
+    for (const entry of this.entries.values()) {
+      // Archives an earlier copy of the plugin left waiting on a running turn.
+      entry.runner.resumeArchives().catch(error => this.logger.warn('[%s] pending archives not resumed: %s', entry.job.name, String(error)))
+    }
     for (const entry of this.entries.values()) {
       const { job } = entry
       if (job.enabled === false) continue
@@ -153,7 +161,7 @@ export class CronJobs {
       timeoutSeconds: job.timeoutSeconds ?? 0,
       gated: isGated(job),
       agent: isGated(job)
-        ? { prompt: job.agent.prompt, preset: job.agent.preset || null, cwd: job.agent.cwd || job.cwd || null, model: agentModel(job) ?? null }
+        ? agentView(job, this.defaults)
         : null,
       nextRunAt: next ? next.toISOString() : null,
       running: runner.current,
@@ -176,5 +184,19 @@ export class CronJobs {
       .finally(() => this.inflight.delete(tracked))
     this.inflight.add(tracked)
     return tracked
+  }
+}
+
+function agentView(job, defaults) {
+  const settings = agentSettings(job, defaults)
+  return {
+    prompt: job.agent.prompt,
+    preset: job.agent.preset || null,
+    cwd: settings.cwd ?? null,
+    // Where the cwd came from: the job, the plugin default, or the job's command cwd.
+    cwdSource: job.agent.cwd ? 'job' : defaults.agentCwd ? 'default' : job.cwd ? 'command' : null,
+    model: agentModel(job) ?? null,
+    autoArchive: settings.autoArchive,
+    reuseWithinHours: settings.reuseWithinHours,
   }
 }

@@ -14,8 +14,10 @@ const Agent = z.object({
   prompt: z.string().role('textarea')
     .description('Prompt sent to a new agent session when the command asks for it. Leave empty for a plain job.'),
   preset: z.string().description('Agent preset of the new session. The host default when empty.'),
-  cwd: z.string().description('Working directory of the new session. The job\'s cwd, then the host default, when empty.'),
+  cwd: z.string().description('Working directory of the woken session; the session joins the workspace registered there. Empty: the plugin\'s defaultAgentCwd, then the job\'s cwd, then the host default.'),
   model: Model,
+  autoArchive: z.boolean().description('Archive the woken session once its turn ends, unless it is pinned or a person has sent it a message (such a session is also never reused). The plugin\'s autoArchive when unset.'),
+  reuseWithinHours: z.number().min(0).description('Send the prompt into this job\'s previous woken session instead of opening a new one, when that session was opened within this many hours. 0 always opens a new session. The plugin\'s reuseWithinHours when unset.'),
 }).description('Wake an agent: run the command as a gate and open a new session only when its output asks for it.')
 
 const Job = z.object({
@@ -32,6 +34,9 @@ const Job = z.object({
 
 export const Config = z.object({
   jobs: z.array(Job).default([]).description('Scheduled jobs.'),
+  defaultAgentCwd: z.string().description('Working directory of woken sessions for jobs whose agent.cwd is empty. Sessions are only found by session search from the same directory, so this is usually the main workspace.'),
+  autoArchive: z.boolean().default(true).description('Archive woken sessions once their turn ends, for jobs that do not set agent.autoArchive. Archived sessions leave the sidebar\'s active list but stay in DSH and in session search.'),
+  reuseWithinHours: z.number().min(0).default(0).description('Reuse window for jobs that do not set agent.reuseWithinHours: send the prompt into the job\'s previous woken session when it was opened within this many hours. 0 always opens a new session.'),
   historyRecords: z.natural().min(1).max(1000).default(DEFAULT_HISTORY_RECORDS)
     .description('Runs kept per job for the Cron tasks page (start, duration, exit code, woken session, output tails). Older runs are dropped.'),
   runLog: z.string().description('JSON Lines file that gets one line when a run starts and one when it ends (outcome, exit code, duration, output tails), so past runs can be checked later. Directories are created as needed. No file when empty.'),

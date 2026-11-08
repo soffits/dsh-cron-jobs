@@ -19,6 +19,18 @@ const runSchema = z.object({
   outcome: z.string().optional(),
   exitCode: z.number().nullable().optional(),
   sessionId: z.string().optional(),
+  // When the woken session was first opened; reused sessions keep the first run's time.
+  sessionOpenedAt: z.string().optional(),
+  // The prompt went into the job's previous session instead of a new one.
+  reused: z.boolean().optional(),
+  // The reused session was busy; the prompt waited for its next turn.
+  queued: z.boolean().optional(),
+  // Why a reuse candidate was not used and a new session was opened.
+  reuseNote: z.string().optional(),
+  // Auto-archive of the woken session: pending until its turn ends, then
+  // archived, kept (see archiveNote), or superseded (a later run reused it).
+  archive: z.enum(['pending', 'archived', 'kept', 'superseded']).optional(),
+  archiveNote: z.string().optional(),
   stdoutTail: z.string().optional(),
   stderrTail: z.string().optional(),
   error: z.string().optional(),
@@ -108,6 +120,11 @@ export class HistoryStore {
 
   /** Complete a saved run with its outcome. */
   async finish(name, id, fields) {
+    await this.update(name, id, fields)
+  }
+
+  /** Merge fields into a saved run; a run already dropped is left alone. */
+  async update(name, id, fields) {
     await this.change(name, state => ({
       ...state,
       runs: state.runs.map(run => (run.id === id ? { ...run, ...clean(fields) } : run)),

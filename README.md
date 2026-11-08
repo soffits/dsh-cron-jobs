@@ -47,6 +47,8 @@ Jobs live in the config of the `cron-jobs` row. Add an override to your profile'
           prompt: Triage the new issues listed below and label them.
           preset: standard
           cwd: /home/me/project
+          # Optional: keep feeding one session for 6 hours instead of opening a new one each time.
+          reuseWithinHours: 6
           # Optional: the model of the woken session.
           model:
             provider: deepseek
@@ -65,7 +67,9 @@ Jobs live in the config of the `cron-jobs` row. Add an override to your profile'
 | `enabled` | `false` keeps the job in the config without scheduling it. Default `true`. |
 | `agent.prompt` | Makes the job a gated job. The prompt sent to the new session. |
 | `agent.preset` | Agent preset of the new session. The Host default when empty. |
-| `agent.cwd` | Working directory of the new session. The job's `cwd`, then the Host default, when empty. |
+| `agent.cwd` | Working directory of the woken session; it joins the workspace registered at that path. When empty: the row's `defaultAgentCwd`, then the job's `cwd`, then the Host default. |
+| `agent.autoArchive` | Archive the woken session once its turn ends (see below). The row's `autoArchive` when unset. |
+| `agent.reuseWithinHours` | Send the prompt into the job's previous woken session when that session was opened less than this many hours ago (see below). `0` always opens a new session. The row's `reuseWithinHours` when unset. |
 | `agent.model.provider`, `agent.model.model` | Model of the new session, with the same provider and model ids the model picker uses. Both must be set; otherwise the preset's or the Host's default model applies. |
 | `agent.model.reasoningEffort` | Reasoning effort id for that model. The model's default when empty. |
 
@@ -73,6 +77,9 @@ Next to `jobs`, the row also takes:
 
 | Field | Meaning |
 |---|---|
+| `defaultAgentCwd` | Working directory of woken sessions for jobs without `agent.cwd`. |
+| `autoArchive` | Default for `agent.autoArchive`. Default `true`. |
+| `reuseWithinHours` | Default for `agent.reuseWithinHours`. Default `0`. |
 | `historyRecords` | Runs kept per job for the Cron tasks page. Default 50, at most 1000. |
 | `runLog` | Optional JSON Lines file of run starts and ends, see below. |
 
@@ -86,12 +93,31 @@ Next to `jobs`, the row also takes:
 
 When `agent.model` is set, the model is checked with the Host's LLM service before the session is created, then selected on the new session the same way the model picker does. Unlike the picker, it does not become the Host's default model. A model the Host cannot route fails the wake (shown as "Could not wake the agent" with the reason in the run's output) instead of silently falling back to another model.
 
+### Which workspace woken sessions land in
+
+DSH's session search only finds sessions whose working directory is exactly the caller's. Woken sessions in a separate jobs directory are therefore invisible from your main workspace and the other way round. Pointing `defaultAgentCwd` (or `agent.cwd`) at the main workspace keeps them all searchable together, and auto-archive keeps the sidebar tidy.
+
+### Auto-archive
+
+With auto-archive on, the plugin waits until the woken session's agent is idle (its turn and anything queued behind it have finished, successfully or not), then archives the session with DSH's Workspace registry, the same service behind the sidebar's Archive action. An archived session leaves the sidebar's active list but stays in DSH: it can be opened, unarchived, and is still returned by DSH's session search tools, which filter only by working directory.
+
+- A running session is never archived. DSH itself refuses while a turn, job or subagent is active; the plugin waits for the next idle and tries again.
+- A session is left alone when it is pinned, or when a person has sent it a message from any client (a message whose source kind is `user`). Such a session is never reused either.
+- The run history shows the result: archive pending, archived, not archived (with the reason), or continued by a later run.
+- The tick does not wait for the agent, so the next run of the job is not held up. If the plugin is reloaded or DSH restarts while a session is still working, the archive is picked up again on the next start.
+
+### Session reuse
+
+With `reuseWithinHours` above 0, a gated job sends its prompt into the session it opened earlier instead of opening a new one, as long as that session was first opened less than `reuseWithinHours` ago. The window counts from the first wake, not from the latest reuse, so a frequent job still starts a fresh session every `reuseWithinHours`. Delivery takes the same path as DSH's Schedule for an existing-session target: the session is resumed if needed and the prompt is queued as a new user turn. If the session is busy, the prompt waits for its next turn instead of a second session being opened.
+
+Only sessions the plugin opened for that job are candidates. If the previous session no longer exists, cannot be resumed, is pinned or was taken over by a person, a new session is opened and the run notes why. DSH does not run model steps in an archived session, so with auto-archive on, an archived session is unarchived just before the prompt and archived again after its turn; with auto-archive off, an archived session is not reused. Runs that reused a session say so in the run history.
+
 ## Cron tasks page
 
 The Web GUI gets a **Cron tasks** entry in the sidebar, laid out like DSH's own Automation tasks page:
 
 - The list shows every configured job with its state (active, paused, off in config, or invalid schedule), its cron expression and time zone, the next run, and the result of the last run. Filter by state or search by name or command. The page refreshes every few seconds while it is visible.
-- Selecting a job opens its detail. **Settings** shows the job's config read-only (command, directory, time limit, and for gated jobs the agent preset and prompt). **Runs** lists the saved runs, newest first: start time, what started it (schedule or Run now), duration, exit code or other outcome, the woken session with a link that opens it, and the tails of stdout and stderr.
+- Selecting a job opens its detail. **Settings** shows the job's config read-only (command, directory, time limit, and for gated jobs the agent preset, session directory and where it came from, auto-archive, session reuse and prompt). **Runs** lists the saved runs, newest first: start time, what started it (schedule or Run now), duration, exit code or other outcome, the woken session with a link that opens it, whether the session was reused, its archive state, and the tails of stdout and stderr.
 - The pause button pauses or resumes the job's schedule. **Run now** in the `⋯` menu starts one run immediately; it is refused while the job is already running. A gated job's footer links to its latest woken session.
 
 Jobs are still defined only in the config; the page does not create, edit or delete them.
@@ -118,7 +144,7 @@ After the command finishes:
 1. If it failed (non-zero exit, killed, timed out, or could not start), the failure is logged and no agent is woken.
 2. If stdout is empty or only whitespace, no agent is woken.
 3. If the last non-empty line of stdout is a JSON object whose `wakeAgent` is exactly `false`, such as `{"wakeAgent": false}`, no agent is woken. This is the gate convention of Hermes Agent cron jobs, so existing gate scripts work unchanged. Any other value, a missing key, or a non-JSON last line wakes.
-4. Otherwise a new session is opened with the job's preset, directory and model, titled `<job name> · <YYYY-MM-DD HH:mm>` in the job's time zone, and sent the prompt followed by the command's stdout in a labelled block. The message is marked as a scheduled message, so the Web GUI shows it like a scheduled run.
+4. Otherwise a new session is opened (or the previous one reused, see Session reuse) with the job's preset, directory and model, titled `<job name> · <YYYY-MM-DD HH:mm>` in the job's time zone, and sent the prompt followed by the command's stdout in a labelled block. The message is marked as a scheduled message, so the Web GUI shows it like a scheduled run.
 
 A gate script that prints a summary when there is work, and nothing (or `{"wakeAgent": false}`) when there is not, is enough:
 

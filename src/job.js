@@ -9,7 +9,11 @@ export const LOG_TAIL_CHARS = 400
 const NO_HISTORY = {
   begin: async () => undefined,
   finish: async () => {},
+  update: async () => {},
+  runs: () => [],
 }
+
+const HOUR_MS = 3600 * 1000
 
 /**
  * Whether a job wakes an agent: it has an `agent` block with a prompt.
@@ -34,6 +38,21 @@ export function agentModel(job) {
 }
 
 /**
+ * Where and how a gated job's agent runs, after plugin defaults.
+ * @param {Job} job
+ * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number }} [defaults] - Plugin-level settings.
+ * @returns {{ cwd?: string, autoArchive: boolean, reuseWithinHours: number }}
+ */
+export function agentSettings(job, defaults = {}) {
+  const cwd = job.agent?.cwd || defaults.agentCwd || job.cwd || undefined
+  return {
+    ...(cwd ? { cwd } : {}),
+    autoArchive: job.agent?.autoArchive ?? defaults.autoArchive ?? false,
+    reuseWithinHours: job.agent?.reuseWithinHours ?? defaults.reuseWithinHours ?? 0,
+  }
+}
+
+/**
  * Runs one configured job per tick. A tick that arrives while the previous run
  * of the same job is still going is skipped.
  *
@@ -44,7 +63,7 @@ export function agentModel(job) {
  * @property {string} command
  * @property {string} [cwd]
  * @property {number} [timeoutSeconds]
- * @property {{ prompt?: string, preset?: string, cwd?: string, model?: { provider?: string, model?: string, reasoningEffort?: string } }} [agent]
+ * @property {{ prompt?: string, preset?: string, cwd?: string, model?: { provider?: string, model?: string, reasoningEffort?: string }, autoArchive?: boolean, reuseWithinHours?: number }} [agent]
  */
 export class JobRunner {
   /**
@@ -52,14 +71,26 @@ export class JobRunner {
    * @param {object} deps
    * @param {(options: object) => Promise<import('./command.js').CommandResult>} deps.run - Runs a command.
    * @param {(request: { text: string, title: string, agentPreset?: string, cwd?: string, model?: object }) => Promise<string>} deps.wake - Opens an agent session; resolves to its id.
+   * @param {(request: { sessionId: string, text: string, mayUnarchive: boolean }) => Promise<{ queued?: boolean }>} [deps.reuse] - Sends the prompt into an existing session (see session.js deliverToSession); without it every wake opens a new session.
+   * @param {(sessionId: string, options: { signal?: AbortSignal, isLatest: () => boolean, lock: Function }) => Promise<{ archive: string, note?: string }>} [deps.settle] - Archives a session after its turn (see session.js archiveWhenIdle); without it nothing is archived.
+   * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number }} [deps.defaults] - Plugin-level agent settings.
    * @param {{ info: Function, warn: Function }} deps.logger
    * @param {AbortSignal} [deps.signal] - Stops a running command when aborted.
    * @param {(entry: object) => Promise<void>} [deps.record] - Appends a run record (see runlog.js).
    * @param {{ begin: Function, finish: Function }} [deps.history] - Saved run history (see history.js).
    * @param {() => Date} [deps.now]
    */
-  constructor(job, { run, wake, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
+  constructor(job, { run, wake, reuse, settle, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
     this.job = job
+    this.reuse = reuse
+    this.settle = settle
+    this.defaults = defaults
+    /** Latest run that sent a prompt to each session; only that run archives it. */
+    this.latestRun = new Map()
+    /** Per-session queue that keeps a delivery and an archive from overlapping. */
+    this.locks = new Map()
+    /** Archive waits in progress, for tests and shutdown. */
+    this.settling = new Set()
     this.record = record
     this.history = history
     this.run = run
@@ -125,6 +156,11 @@ export class JobRunner {
           endedAt: endedAt.toISOString(),
           durationMs: result?.durationMs ?? (endedAt.getTime() - firedAt.getTime()),
           sessionId: outcome.sessionId,
+          sessionOpenedAt: outcome.sessionOpenedAt,
+          reused: outcome.reused,
+          queued: outcome.queued,
+          reuseNote: outcome.reuseNote,
+          archive: outcome.archive,
           error: thrown ?? outcome.error ?? result?.error,
           ...(result ? {
             outcome: describeOutcome(result, job),
@@ -136,6 +172,7 @@ export class JobRunner {
       }
       this.running = false
       this.current = null
+      if (outcome.archive === 'pending' && runId !== undefined) this.watchArchive(outcome.sessionId, runId)
     }
   }
 
@@ -162,27 +199,136 @@ export class JobRunner {
       return { status: 'idle' }
     }
     const localTime = formatLocalTime(firedAt, job.timeZone || undefined)
+    const settings = agentSettings(job, this.defaults)
+    const text = buildAgentPrompt({
+      jobName: job.name,
+      prompt: job.agent.prompt,
+      stdout: result.stdout,
+      droppedBytes: result.stdoutDropped,
+      firedAt: localTime,
+    })
+    const archive = settings.autoArchive && this.settle !== undefined ? { archive: 'pending' } : {}
+    let reuseNote
+    const previous = this.reusableRun(settings, firedAt)
+    if (previous !== undefined) {
+      try {
+        const sent = await this.withSessionLock(previous.sessionId, async () => {
+          const delivered = await this.reuse({ sessionId: previous.sessionId, text, mayUnarchive: settings.autoArchive })
+          // Inside the lock, so an earlier run's archive wait sees it was superseded.
+          this.latestRun.set(previous.sessionId, null)
+          return delivered
+        })
+        logger.info('[%s] sent the prompt to session %s%s', job.name, previous.sessionId, sent?.queued ? ' (queued behind its current turn)' : '')
+        return {
+          status: 'woke',
+          sessionId: previous.sessionId,
+          sessionOpenedAt: previous.sessionOpenedAt ?? previous.startedAt,
+          reused: true,
+          ...(sent?.queued ? { queued: true } : {}),
+          ...archive,
+        }
+      } catch (error) {
+        reuseNote = `session ${previous.sessionId} not reused: ${describeError(error)}`
+        logger.warn('[%s] %s; opening a new session', job.name, reuseNote)
+      }
+    }
     try {
-      const sessionId = await this.wake({
-        text: buildAgentPrompt({
-          jobName: job.name,
-          prompt: job.agent.prompt,
-          stdout: result.stdout,
-          droppedBytes: result.stdoutDropped,
-          firedAt: localTime,
-        }),
+      const opened = await this.wake({
+        text,
         title: sessionTitle(job.name, localTime),
         ...(job.agent.preset ? { agentPreset: job.agent.preset } : {}),
         ...(agentModel(job) ? { model: agentModel(job) } : {}),
-        ...(job.agent.cwd || job.cwd ? { cwd: job.agent.cwd || job.cwd } : {}),
+        ...(settings.cwd ? { cwd: settings.cwd } : {}),
       })
+      const sessionId = typeof opened === 'string' ? opened : opened.sessionId
+      this.latestRun.set(sessionId, null)
       logger.info('[%s] woke agent in session %s', job.name, sessionId)
-      return { status: 'woke', sessionId }
+      return {
+        status: 'woke',
+        sessionId,
+        sessionOpenedAt: firedAt.toISOString(),
+        ...(reuseNote ? { reuseNote } : {}),
+        ...archive,
+      }
     } catch (error) {
       const reason = describeError(error)
       logger.warn('[%s] could not wake agent: %s', job.name, reason)
-      return { status: 'wake-failed', error: reason }
+      return { status: 'wake-failed', error: reason, ...(reuseNote ? { reuseNote } : {}) }
     }
+  }
+
+  /**
+   * The job's previous woken run whose session may take this prompt: the
+   * newest run with a session, opened (first woken) within the reuse window.
+   * The window counts from the session's first wake, not its latest reuse, so
+   * a frequent job still starts a fresh session every `reuseWithinHours`.
+   * Only sessions this plugin opened for this job are candidates.
+   */
+  reusableRun(settings, firedAt) {
+    if (!(settings.reuseWithinHours > 0) || this.reuse === undefined) return undefined
+    const previous = this.history.runs(this.job.name).find(run => run.sessionId && run.status === 'woke')
+    if (previous === undefined) return undefined
+    const opened = Date.parse(previous.sessionOpenedAt ?? previous.startedAt)
+    if (!Number.isFinite(opened)) return undefined
+    const age = firedAt.getTime() - opened
+    return age >= 0 && age < settings.reuseWithinHours * HOUR_MS ? previous : undefined
+  }
+
+  /**
+   * Archive a woken session once its turn is over and save the result in the
+   * run's history. Runs in the background: a tick never waits for an agent.
+   * A later run that sends to the same session takes over the archive.
+   */
+  watchArchive(sessionId, runId) {
+    const { job, logger } = this
+    this.latestRun.set(sessionId, runId)
+    const watch = (async () => {
+      const result = await this.settle(sessionId, {
+        signal: this.signal,
+        isLatest: () => this.latestRun.get(sessionId) === runId,
+        lock: fn => this.withSessionLock(sessionId, fn),
+      })
+      // Unloading: leave 'pending' for the next copy of the plugin to finish.
+      if (result.archive === 'pending' || this.signal?.aborted) return
+      if (this.latestRun.get(sessionId) === runId) this.latestRun.delete(sessionId)
+      if (result.archive === 'archived') logger.info('[%s] archived session %s', job.name, sessionId)
+      else if (result.archive === 'kept') logger.info('[%s] kept session %s: %s', job.name, sessionId, result.note)
+      await this.history.update(job.name, runId, { archive: result.archive, archiveNote: result.note })
+    })().catch((error) => {
+      logger.warn('[%s] archive of session %s failed: %s', job.name, sessionId, describeError(error))
+      if (!this.signal?.aborted) return this.history.update(job.name, runId, { archive: 'kept', archiveNote: describeError(error) })
+    }).finally(() => this.settling.delete(watch))
+    this.settling.add(watch)
+    return watch
+  }
+
+  /**
+   * After a restart or config reload: finish archives an earlier copy of the
+   * plugin left pending. The newest pending run of each session takes it;
+   * older ones on the same session are marked superseded.
+   */
+  async resumeArchives() {
+    if (this.settle === undefined) return
+    const seen = new Set()
+    for (const run of this.history.runs(this.job.name)) {
+      if (run.archive !== 'pending' || !run.sessionId) continue
+      if (seen.has(run.sessionId)) {
+        await this.history.update(this.job.name, run.id, { archive: 'superseded' })
+        continue
+      }
+      seen.add(run.sessionId)
+      this.watchArchive(run.sessionId, run.id)
+    }
+  }
+
+  /** Run fn after any earlier delivery or archive of the same session. */
+  withSessionLock(sessionId, fn) {
+    const previous = this.locks.get(sessionId) ?? Promise.resolve()
+    const next = previous.catch(() => {}).then(fn)
+    const tail = next.catch(() => {})
+    this.locks.set(sessionId, tail)
+    tail.then(() => { if (this.locks.get(sessionId) === tail) this.locks.delete(sessionId) })
+    return next
   }
 
   logResult(result) {

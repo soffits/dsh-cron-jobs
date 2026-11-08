@@ -92,6 +92,21 @@ window.__ModuleLoader__.load({
       'field.modelDefault': 'Preset or host default',
       'field.effort': 'Reasoning effort',
       'field.prompt': 'Agent prompt',
+      'field.cwdFromDefault': 'plugin default',
+      'field.cwdFromCommand': 'command directory',
+      'field.autoArchive': 'Auto-archive',
+      'field.autoArchiveOn': 'Archive the session after its turn ends (kept if pinned or taken over by a person)',
+      'field.autoArchiveOff': 'Off',
+      'field.reuse': 'Session reuse',
+      'field.reuseOff': 'Off: every wake opens a new session',
+      'field.reuseValue': 'Reuse the previous session for {hours} h after it was opened',
+      'run.reused': 'Reused session',
+      'run.queued': 'queued behind a running turn',
+      'run.reuseFailed': 'new session (reuse not possible)',
+      'archive.pending': 'archive after the turn',
+      'archive.archived': 'archived',
+      'archive.kept': 'not archived',
+      'archive.superseded': 'continued by a later run',
       'runs.empty': 'No runs yet.',
       'runs.retention': 'The last {count} runs of each job are kept.',
       'runs.loadError': 'Could not load runs.',
@@ -183,6 +198,21 @@ window.__ModuleLoader__.load({
       'field.modelDefault': '预设或主机默认',
       'field.effort': '推理强度',
       'field.prompt': '智能体提示词',
+      'field.cwdFromDefault': '插件默认',
+      'field.cwdFromCommand': '命令目录',
+      'field.autoArchive': '自动归档',
+      'field.autoArchiveOn': '回合结束后归档会话（已置顶或有人接手的会话不归档）',
+      'field.autoArchiveOff': '关闭',
+      'field.reuse': '复用会话',
+      'field.reuseOff': '关闭：每次唤醒都开新会话',
+      'field.reuseValue': '会话打开后 {hours} 小时内复用上一个会话',
+      'run.reused': '复用了会话',
+      'run.queued': '排在正在进行的回合之后',
+      'run.reuseFailed': '新会话（无法复用）',
+      'archive.pending': '回合结束后归档',
+      'archive.archived': '已归档',
+      'archive.kept': '未归档',
+      'archive.superseded': '由后续运行接续',
       'runs.empty': '还没有运行记录。',
       'runs.retention': '每个任务保留最近 {count} 次运行。',
       'runs.loadError': '无法加载运行记录。',
@@ -495,7 +525,14 @@ window.__ModuleLoader__.load({
             ? h('span', { className: 'dcj-code' }, `${job.agent.model.provider} / ${job.agent.model.model}`)
             : t('field.modelDefault')),
           job.agent.model?.reasoningEffort && h(RuleRow, { key: 'effort', label: t('field.effort') }, job.agent.model.reasoningEffort),
-          h(RuleRow, { key: 'agentCwd', label: t('field.agentCwd') }, job.agent.cwd ? h('span', { className: 'dcj-code' }, job.agent.cwd) : t('field.cwdHost')),
+          h(RuleRow, { key: 'agentCwd', label: t('field.agentCwd') }, job.agent.cwd
+            ? h(React.Fragment, null, h('span', { className: 'dcj-code' }, job.agent.cwd),
+              job.agent.cwdSource === 'default' ? ` (${t('field.cwdFromDefault')})` : job.agent.cwdSource === 'command' ? ` (${t('field.cwdFromCommand')})` : null)
+            : t('field.cwdHost')),
+          h(RuleRow, { key: 'autoArchive', label: t('field.autoArchive') }, t(job.agent.autoArchive ? 'field.autoArchiveOn' : 'field.autoArchiveOff')),
+          h(RuleRow, { key: 'reuse', label: t('field.reuse') }, job.agent.reuseWithinHours > 0
+            ? t('field.reuseValue', { hours: job.agent.reuseWithinHours })
+            : t('field.reuseOff')),
           h(RuleRow, { key: 'prompt', label: t('field.prompt'), stack: true }, h('pre', { className: 'dcj-pre' }, job.agent.prompt)),
         ].filter(Boolean))
       }
@@ -509,7 +546,10 @@ window.__ModuleLoader__.load({
       if (typeof run.durationMs === 'number') meta.push(formatDuration(run.durationMs, locale))
       if (typeof run.exitCode === 'number') meta.push(t('run.exit', { code: run.exitCode }))
       if (run.outcome && !/^exit \d+$/.test(run.outcome)) meta.push(run.outcome)
-      const hasOutput = Boolean(run.stdoutTail || run.stderrTail || run.error)
+      if (run.reused) meta.push(run.queued ? `${t('run.reused')} (${t('run.queued')})` : t('run.reused'))
+      else if (run.reuseNote) meta.push(t('run.reuseFailed'))
+      if (run.archive) meta.push(t(`archive.${run.archive}`) + (run.archiveNote ? `: ${run.archiveNote}` : ''))
+      const hasOutput = Boolean(run.stdoutTail || run.stderrTail || run.error || run.reuseNote)
       return h('li', { className: cx('dcj-run', bad && 'dcj-runBad') },
         h(IconAlarmClock, { className: 'dcj-runGlyph' }),
         h('div', { className: 'dcj-runBody' },
@@ -525,6 +565,7 @@ window.__ModuleLoader__.load({
           open && (hasOutput
             ? h(React.Fragment, null,
               run.error && h('pre', { className: 'dcj-pre' }, run.error),
+              run.reuseNote && h('pre', { className: 'dcj-pre' }, run.reuseNote),
               run.stdoutTail && h(React.Fragment, null, h('div', { className: 'dcj-outLabel' }, t('run.stdout')), h('pre', { className: 'dcj-pre' }, run.stdoutTail)),
               run.stderrTail && h(React.Fragment, null, h('div', { className: 'dcj-outLabel' }, t('run.stderr')), h('pre', { className: 'dcj-pre' }, run.stderrTail)))
             : h('div', { className: 'dcj-runMeta' }, t('run.noOutput')))))

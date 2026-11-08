@@ -7,7 +7,7 @@
  */
 import { Config } from './src/config.js'
 import { runCommand } from './src/command.js'
-import { openAgentSession } from './src/session.js'
+import { archiveWhenIdle, deliverToSession, openAgentSession } from './src/session.js'
 import { CronJobs } from './src/controller.js'
 import { createRunLog } from './src/runlog.js'
 import { openHistory } from './src/history.js'
@@ -19,7 +19,7 @@ export { Config }
 
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ jobs: import('./src/job.js').Job[], runLog?: string, historyRecords?: number }} config
+ * @param {{ jobs: import('./src/job.js').Job[], runLog?: string, historyRecords?: number, defaultAgentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number }} config
  */
 export function apply(ctx, config) {
   const logger = ctx.logger('cron-jobs')
@@ -40,6 +40,13 @@ export function apply(ctx, config) {
         logger,
         run: runCommand,
         wake: request => openAgentSession(ctx, request, logger),
+        reuse: request => deliverToSession(ctx, request),
+        settle: (sessionId, options) => archiveWhenIdle(ctx, sessionId, options),
+        defaults: {
+          agentCwd: config.defaultAgentCwd || undefined,
+          autoArchive: config.autoArchive ?? true,
+          reuseWithinHours: config.reuseWithinHours ?? 0,
+        },
         signal: controller.signal,
         record: createRunLog(config.runLog || undefined, logger),
         history,
