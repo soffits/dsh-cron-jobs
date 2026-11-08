@@ -297,6 +297,7 @@ export class CronJobs {
    * @param {string} [input.preset]
    * @param {{ kind: 'new' } | { kind: 'new_once' } | { kind: 'session', sessionId: string }} input.target
    * @param {{ via: string, to: string } | false} [input.deliver] - Where results go; the plugin default when omitted.
+   * @param {{ provider: string, model: string, reasoningEffort?: string }} [input.model] - Model of the sessions it opens; the preset or host default when omitted.
    * @param {string} [input.createdBy]
    * @returns {Promise<object>} The job's view.
    * @throws {JobInputError | ScheduleError}
@@ -315,6 +316,7 @@ export class CronJobs {
       ...(input.preset ? { preset: input.preset } : {}),
       target: input.target ?? { kind: 'new' },
       ...(deliveryTarget(input.deliver) !== undefined ? { deliver: deliveryTarget(input.deliver) } : {}),
+      ...(input.model !== undefined ? { model: storedModel(input.model) } : {}),
       status: 'active',
       scheduledAt: firstRun(spec, now),
       createdAt: now.toISOString(),
@@ -336,7 +338,7 @@ export class CronJobs {
    * starts from the present and reactivates an ended job; a paused job stays
    * paused.
    * @param {string} id
-   * @param {{ title?: string, prompt?: string, command?: string, schedule?: { cron?: string, rrule?: string, at?: string, timeZone?: string }, cwd?: string, preset?: string, target?: object, deliver?: object | false | null }} patch - `deliver: null` goes back to the plugin default.
+   * @param {{ title?: string, prompt?: string, command?: string, schedule?: { cron?: string, rrule?: string, at?: string, timeZone?: string }, cwd?: string, preset?: string, target?: object, deliver?: object | false | null, model?: object | null }} patch - `deliver: null` goes back to the plugin default; `model: null` to the preset or host default.
    * @returns {Promise<object>} The job's view.
    */
   async update(id, patch) {
@@ -354,6 +356,7 @@ export class CronJobs {
     if (patch.preset !== undefined) next.preset = patch.preset || undefined
     if (patch.target !== undefined) next.target = patch.target
     if (patch.deliver !== undefined) next.deliver = deliveryTarget(patch.deliver)
+    if (patch.model !== undefined) next.model = patch.model === null ? undefined : storedModel(patch.model)
     if (patch.schedule !== undefined) {
       next.schedule = changedSchedule(current.schedule, patch.schedule)
       next.scheduledAt = firstRun(next.schedule, now)
@@ -487,7 +490,7 @@ function fromStored(record) {
     ...(record.cwd ? { cwd: record.cwd } : {}),
     timeoutSeconds: record.timeoutSeconds ?? DEFAULT_STORED_TIMEOUT_SECONDS,
     timeZone: scheduleZone(record.schedule),
-    ...(record.prompt ? { agent: { prompt: record.prompt, ...(record.preset ? { preset: record.preset } : {}), ...(record.cwd ? { cwd: record.cwd } : {}) } } : {}),
+    ...(record.prompt ? { agent: { prompt: record.prompt, ...(record.preset ? { preset: record.preset } : {}), ...(record.cwd ? { cwd: record.cwd } : {}), ...(record.model ? { model: record.model } : {}) } } : {}),
     target: record.target,
     ...(record.deliver !== undefined ? { deliver: record.deliver } : {}),
     spec: record.schedule,
@@ -531,6 +534,13 @@ function title(value) {
 
 function text(field, value) {
   return typeof value === 'string' && value.trim() !== '' ? { [field]: value } : {}
+}
+
+/** A stored job's model: provider and model required, effort optional. */
+function storedModel(value) {
+  const model = agentModel({ agent: { model: value ?? {} } })
+  if (model === undefined) throw new JobInputError('invalid_job', 'model needs both provider and model')
+  return model
 }
 
 function requireWork(record) {

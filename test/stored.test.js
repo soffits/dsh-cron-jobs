@@ -250,3 +250,27 @@ test('the page can delete stored jobs but not config jobs, by id', async () => {
   assert.equal(controller.list().length, 1)
   await controller.stop()
 })
+
+test('a stored job opens its sessions on its model; editing changes it and null clears it', async () => {
+  const { controller, timers, wakes, history } = setup()
+  const model = { provider: 'anthropic', model: 'claude-sonnet-4-5', reasoningEffort: 'high' }
+  const job = await controller.create({ ...reminder, target: { kind: 'new' }, schedule: { cron: '0 9 * * *', timeZone: 'America/Toronto' }, model: { ...model, model: ' claude-sonnet-4-5 ' } })
+  assert.deepEqual(job.agent.model, model)
+  assert.deepEqual(history.tasks.get(job.id).model, model)
+  timers[0].fire()
+  await settle()
+  await settle()
+  assert.deepEqual(wakes[0].model, model)
+
+  const changed = await controller.update(job.id, { model: { provider: 'deepseek', model: 'deepseek-chat' } })
+  assert.deepEqual(changed.agent.model, { provider: 'deepseek', model: 'deepseek-chat' })
+  await controller.update(job.id, { title: 'Renamed' })
+  assert.deepEqual(history.tasks.get(job.id).model, { provider: 'deepseek', model: 'deepseek-chat' }, 'other edits keep the model')
+
+  const cleared = await controller.update(job.id, { model: null })
+  assert.equal(cleared.agent.model, null)
+  assert.equal('model' in history.tasks.get(job.id), false)
+  await assert.rejects(controller.create({ ...reminder, model: { provider: 'anthropic' } }), error => error.code === 'invalid_job')
+  await assert.rejects(controller.update(job.id, { model: {} }), error => error.code === 'invalid_job')
+  await controller.stop()
+})

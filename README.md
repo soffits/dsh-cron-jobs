@@ -208,7 +208,7 @@ The `cron-jobs-tools` row registers four tools. Their names start with `cron_job
 
 | Tool | What it does |
 |---|---|
-| `cron_job_create` | Create a job: a title, a prompt and/or a command, exactly one of `cron`, `rrule` and `at` (with `timeZone` where needed), where the prompt goes, and optionally where the result is delivered. |
+| `cron_job_create` | Create a job: a title, a prompt and/or a command, exactly one of `cron`, `rrule` and `at` (with `timeZone` where needed), where the prompt goes, and optionally where the result is delivered and which model its sessions use. |
 | `cron_job_edit` | `update` the given fields, `pause`, `resume` (continues from now), or `delete` a job by id. |
 | `cron_job_list` | Every job, from the config and from tools, with its id, state, schedule, next run, target and last run. |
 | `cron_job_view` | One job's full definition and its five latest runs. |
@@ -222,6 +222,8 @@ Where the prompt goes (`target`):
 - `this_session`: the session that created the job, for reminders and follow-ups to the conversation. `sessionId` names another existing session instead.
 
 `deliver` takes `<service>:<address>` (such as `telegramTopics:notify`) or `none`; the service must be running when the job is created. Left out, the job uses the row's default target, or delivers nothing when its prompt goes to an existing session. On `cron_job_edit`, an empty `deliver` goes back to the default.
+
+`model` is an object, `{ "provider": "anthropic", "model": "claude-sonnet-4-5", "reasoningEffort": "high" }`, with the same ids the model picker uses; `provider` and `model` are required together and `reasoningEffort` is optional. The sessions the job opens start on that model, like `agent.model` on a config job; left out, the preset's or host default applies. `cron_job_edit` with `model` sets it on an existing job, and an empty object (`{}`) clears it. `cron_job_list` and `cron_job_view` show the model when one is set. A job that posts into an existing session (`this_session`, `sessionId`) does not open a session, so its model has no effect.
 
 The prompt arrives as a scheduled message from the user, with the job's title and id, so the agent can look the job up or delete it when it is done. A message for an existing session is queued behind a turn that is still running. It is delivered even if the session is pinned or a person is using it, since that is what the job was created for; an archived target session is unarchived first. Target sessions are never auto-archived.
 
@@ -253,6 +255,7 @@ All three are kept in DSH's storage domain service under the domain `cron_jobs` 
   "preset": "default",
   "target": { "kind": "session", "sessionId": "session-0123" },
   "deliver": { "via": "telegramTopics", "to": "notify" },
+  "model": { "provider": "anthropic", "model": "claude-sonnet-4-5" },
   "status": "active",
   "scheduledAt": "2026-11-09T15:00:00.000Z",
   "createdAt": "2026-11-08T17:00:00.000Z",
@@ -261,7 +264,7 @@ All three are kept in DSH's storage domain service under the domain `cron_jobs` 
 }
 ```
 
-`schedule` is `{ "kind": "cron", "expression", "timeZone" }`, `{ "kind": "rrule", "rrule" }` or `{ "kind": "at", "at" }` (a UTC instant); `target` is `{ "kind": "new" }`, `{ "kind": "new_once", "sessionId"? }` or `{ "kind": "session", "sessionId" }`; `status` is `active`, `paused` or `ended`; `command`, `timeoutSeconds` and `deliver` (`{ "via", "to" }` or `false`; the default when missing) are optional. `scheduledAt` is the next run.
+`schedule` is `{ "kind": "cron", "expression", "timeZone" }`, `{ "kind": "rrule", "rrule" }` or `{ "kind": "at", "at" }` (a UTC instant); `target` is `{ "kind": "new" }`, `{ "kind": "new_once", "sessionId"? }` or `{ "kind": "session", "sessionId" }`; `status` is `active`, `paused` or `ended`; `command`, `timeoutSeconds`, `model` (`{ "provider", "model", "reasoningEffort"? }`) and `deliver` (`{ "via", "to" }` or `false`; the default when missing) are optional. `scheduledAt` is the next run.
 
 For run history and pausing:
 

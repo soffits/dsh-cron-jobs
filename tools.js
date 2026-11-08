@@ -46,12 +46,24 @@ export function toolSchemas(prefix) {
     cwd: { type: 'string', description: 'Working directory of the command and of new sessions; defaults to this session\'s.' },
     deliver: { type: 'string', description: 'Where each run\'s result is sent: "<service>:<address>", a DSH service that delivers messages and an address it understands (such as telegramTopics:notify), or "none". The result is the agent\'s final answer (exactly [SILENT] sends nothing; MEDIA:<path> lines become attachments), or for a job without a prompt the command\'s stdout and failures. Defaults to the plugin\'s default target, or none when the prompt goes to an existing session.' },
   }
+  const model = {
+    type: 'object',
+    description: 'Model of the sessions the job opens, as in the model picker: provider and model together, reasoningEffort optional. Left out, they use the preset\'s or the host\'s default model.',
+    properties: {
+      provider: { type: 'string', description: 'Provider id, such as anthropic.' },
+      model: { type: 'string', description: 'Model id within that provider.' },
+      reasoningEffort: { type: 'string', description: 'Reasoning effort id the model supports.' },
+    },
+    required: [],
+    additionalProperties: false,
+  }
   return {
     create: object({
       title: { type: 'string', description: 'Job name in the user\'s language, at most 200 characters: action plus object, without timing or status.' },
       ...fields,
       ...schedule,
       timeZone: { type: 'string', description: 'IANA zone such as America/Toronto. Required with cron and with an at without offset; rrule takes its zone from DTSTART.' },
+      model,
     }, ['title']),
     edit: object({
       id: { type: 'string', description: 'Job id.' },
@@ -69,6 +81,7 @@ export function toolSchemas(prefix) {
       sessionId: fields.sessionId,
       cwd: { type: 'string', description: 'New working directory of the command and of new sessions.' },
       deliver: { type: 'string', description: `New delivery target, as in ${prefix}_create; an empty string returns to the default.` },
+      model: { ...model, description: `New model, as in ${prefix}_create. An empty object ({}) returns to the preset's or host default.` },
     }, ['id', 'action']),
     list: object({}, []),
     view: object({ id: { type: 'string', description: 'Job id.' } }, ['id']),
@@ -115,6 +128,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
         schedule: { cron: args.cron, rrule: args.rrule, at: args.at, timeZone: args.timeZone },
         cwd: args.cwd || callerCwd(agent),
         preset: callerPreset(agent),
+        ...(toModel(args.model) ? { model: toModel(args.model) } : {}),
         target: await resolveTarget(ctx, agent, args.target ?? 'new', args.sessionId),
         ...(args.deliver ? { deliver: parseDeliver(ctx, args.deliver) } : {}),
         createdBy: agent?.session?.id,
@@ -124,7 +138,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
       `Update, pause, resume or delete one job created with ${prefix}_create, by id. Jobs from the plugin config are read-only.`,
       async (args, jobs, agent) => {
         const { id, action } = args
-        const changes = ['title', 'prompt', 'command', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver'].filter(key => args[key] !== undefined)
+        const changes = ['title', 'prompt', 'command', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver', 'model'].filter(key => args[key] !== undefined)
         if (action !== 'update' && changes.length > 0) return failure('invalid_arguments', `${action} takes only id and action.`)
         if (action === 'delete') return await jobs.remove(id)
         if (action === 'pause' || action === 'resume') {
@@ -141,6 +155,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
           prompt: args.prompt,
           command: args.command,
           cwd: args.cwd,
+          ...(args.model !== undefined ? { model: toModel(args.model) ?? null } : {}),
           ...(scheduleGiven ? { schedule: { cron: args.cron, rrule: args.rrule, at: args.at, timeZone: args.timeZone } } : {}),
           ...(targetGiven ? { target: await resolveTarget(ctx, agent, args.target ?? 'new', args.sessionId) } : {}),
           ...(args.deliver !== undefined ? { deliver: args.deliver === '' ? null : parseDeliver(ctx, args.deliver) } : {}),
@@ -187,6 +202,13 @@ function parseDeliver(ctx, value) {
   const service = ctx?.get?.(via)
   if (typeof service?.send !== 'function') throw codeError('invalid_deliver', `No running service ${JSON.stringify(via)} can deliver messages.`)
   return { via, to }
+}
+
+/** The model argument for the controller: undefined or null when it names no model (clears it on edit). */
+function toModel(value) {
+  if (value === undefined || value === null) return undefined
+  const given = Object.values(value).some(part => typeof part === 'string' && part.trim() !== '')
+  return given ? value : undefined
 }
 
 /** Where a job's prompt goes, from the tool's target choice. */
@@ -241,6 +263,7 @@ export function modelJob(job, { brief = false } = {}) {
     schedule: job.schedule?.text ?? null,
     ...(job.nextRunAt ? { nextRunAt: job.nextRunAt, nextRunAtLocal: `${formatLocalTime(new Date(job.nextRunAt), zone)}${zone ? ` ${zone}` : ''}` } : { nextRunAt: null }),
     ...(job.target ? { target: job.target.sessionId ? `${job.target.kind} ${job.target.sessionId}` : job.target.kind } : {}),
+    ...(job.agent?.model ? { model: job.agent.model } : {}),
     deliver: job.deliver?.via ? (job.deliver.to ? `${job.deliver.via}:${job.deliver.to}` : job.deliver.via) : 'none',
     ...(brief ? {} : {
       ...(job.agent ? { prompt: job.agent.prompt, preset: job.agent.preset, sessionCwd: job.agent.cwd } : {}),
@@ -275,6 +298,12 @@ export function checkArgs(schema, args) {
     const property = schema.properties[key]
     if (property === undefined) return `unknown argument ${key}`
     if (value === undefined) continue
+    if (property.type === 'object') {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return `${key} must be an object`
+      const inner = checkArgs(property, value)
+      if (inner) return `${key}: ${inner}`
+      continue
+    }
     if (typeof value !== property.type) return `${key} must be a ${property.type}`
     if (property.enum && !property.enum.includes(value)) return `${key} must be one of ${property.enum.join(', ')}`
   }

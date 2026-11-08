@@ -149,3 +149,23 @@ test('in Cordis, the tools reach the scheduler through the cronJobs service', as
   await fiber.dispose()
   assert.equal((await registered.get('cron_job_list').execute({}, { agent: caller() })).code, 'unavailable')
 })
+
+test('create and edit set, change and clear a job\'s model; list and view show it', async () => {
+  const { call } = setup()
+  const model = { provider: 'anthropic', model: 'claude-sonnet-4-5', reasoningEffort: 'high' }
+  const job = await call('create', { title: 'Report', prompt: 'Write it.', cron: '0 9 * * 1', timeZone: 'America/Toronto', model })
+  assert.deepEqual(job.model, model)
+  assert.deepEqual((await call('view', { id: job.id })).model, model)
+  assert.deepEqual((await call('list', {})).jobs[0].model, model)
+
+  const changed = await call('edit', { id: job.id, action: 'update', model: { provider: 'deepseek', model: 'deepseek-chat' } })
+  assert.deepEqual(changed.model, { provider: 'deepseek', model: 'deepseek-chat' })
+  assert.equal((await call('edit', { id: job.id, action: 'update', model: {} })).model, undefined)
+  assert.equal((await call('view', { id: job.id })).model, undefined)
+
+  assert.equal((await call('edit', { id: job.id, action: 'update', model: { provider: 'deepseek' } })).code, 'invalid_job')
+  assert.equal((await call('edit', { id: job.id, action: 'update', model: 'gpt' })).code, 'invalid_arguments')
+  assert.equal((await call('create', { title: 'x', prompt: 'x', cron: '0 9 * * *', timeZone: 'UTC', model: { provider: 'a', extra: 1 } })).code, 'invalid_arguments')
+  const plain = await call('create', { title: 'Plain', prompt: 'hi', at: '2026-11-09T09:00:00Z' })
+  assert.equal(plain.model, undefined)
+})

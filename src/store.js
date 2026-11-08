@@ -39,6 +39,8 @@ export const storedJobSchema = z.object({
   target: targetSchema,
   timeoutSeconds: z.number().int().min(0).optional(),
   deliver: deliverSchema.optional(),
+  // Model of the sessions the job opens; omitted uses the preset or host default.
+  model: z.object({ provider: z.string().min(1), model: z.string().min(1), reasoningEffort: z.string().min(1).optional() }).optional(),
   status: z.enum(['active', 'paused', 'ended']),
   // Next run; kept so a run missed while DSH was down happens once at startup.
   scheduledAt: z.string().optional(),
