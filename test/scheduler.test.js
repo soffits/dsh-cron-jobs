@@ -69,6 +69,6 @@ test('config defaults', () => {
   const config = Config({ jobs: [{ name: 'a', cron: '* * * * *', command: 'true' }] })
   assert.equal(config.jobs[0].enabled, true)
   assert.equal(config.jobs[0].timeoutSeconds, 3600)
-  assert.deepEqual(Config({}), { jobs: [] })
+  assert.deepEqual(Config({}), { jobs: [], historyRecords: 50 })
   assert.throws(() => Config({ jobs: [{ name: 'a', command: 'true' }] }), /cron/)
 })

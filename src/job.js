@@ -1,8 +1,15 @@
 import { decideWake } from './wake.js'
 import { buildAgentPrompt, formatLocalTime, sessionTitle } from './prompt.js'
+import { HISTORY_TAIL_CHARS } from './history.js'
 
 /** Characters of stdout/stderr shown in the log after each run. */
 export const LOG_TAIL_CHARS = 400
+
+/** Stand-in history used when a runner has none. */
+const NO_HISTORY = {
+  begin: async () => undefined,
+  finish: async () => {},
+}
 
 /**
  * Whether a job wakes an agent: it has an `agent` block with a prompt.
@@ -10,6 +17,20 @@ export const LOG_TAIL_CHARS = 400
  */
 export function isGated(job) {
   return typeof job.agent?.prompt === 'string' && job.agent.prompt.trim() !== ''
+}
+
+/**
+ * The model chosen for a job's woken sessions, or undefined to use the preset
+ * or host default. Needs both a provider and a model.
+ * @param {Job} job
+ * @returns {{ provider: string, model: string, reasoningEffort?: string } | undefined}
+ */
+export function agentModel(job) {
+  const provider = job.agent?.model?.provider?.trim()
+  const model = job.agent?.model?.model?.trim()
+  if (!provider || !model) return undefined
+  const reasoningEffort = job.agent.model.reasoningEffort?.trim()
+  return { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) }
 }
 
 /**
@@ -23,35 +44,41 @@ export function isGated(job) {
  * @property {string} command
  * @property {string} [cwd]
  * @property {number} [timeoutSeconds]
- * @property {{ prompt?: string, preset?: string, cwd?: string }} [agent]
+ * @property {{ prompt?: string, preset?: string, cwd?: string, model?: { provider?: string, model?: string, reasoningEffort?: string } }} [agent]
  */
 export class JobRunner {
   /**
    * @param {Job} job
    * @param {object} deps
    * @param {(options: object) => Promise<import('./command.js').CommandResult>} deps.run - Runs a command.
-   * @param {(request: { text: string, title: string, agentPreset?: string, cwd?: string }) => Promise<string>} deps.wake - Opens an agent session; resolves to its id.
+   * @param {(request: { text: string, title: string, agentPreset?: string, cwd?: string, model?: object }) => Promise<string>} deps.wake - Opens an agent session; resolves to its id.
    * @param {{ info: Function, warn: Function }} deps.logger
    * @param {AbortSignal} [deps.signal] - Stops a running command when aborted.
    * @param {(entry: object) => Promise<void>} [deps.record] - Appends a run record (see runlog.js).
+   * @param {{ begin: Function, finish: Function }} [deps.history] - Saved run history (see history.js).
    * @param {() => Date} [deps.now]
    */
-  constructor(job, { run, wake, logger, signal, record = async () => {}, now = () => new Date() }) {
+  constructor(job, { run, wake, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
     this.job = job
     this.record = record
+    this.history = history
     this.run = run
     this.wake = wake
     this.logger = logger
     this.signal = signal
     this.now = now
     this.running = false
+    /** The run in progress: when it started and what started it; null when idle. */
+    this.current = null
   }
 
   /**
-   * Run the job once.
+   * Run the job once. `running` and `current` are set before the first await,
+   * so a caller can read them as soon as this returns its promise.
+   * @param {{ trigger?: 'schedule' | 'manual' }} [options] - What started the run.
    * @returns {Promise<{ status: 'skipped' | 'done' | 'failed' | 'idle' | 'woke' | 'wake-failed', sessionId?: string }>}
    */
-  async tick() {
+  async tick({ trigger = 'schedule' } = {}) {
     const { job, logger } = this
     if (this.running) {
       logger.warn('[%s] previous run still going; skipping this tick', job.name)
@@ -60,22 +87,25 @@ export class JobRunner {
     }
     this.running = true
     const firedAt = this.now()
+    this.current = { startedAt: firedAt.toISOString(), trigger }
     let result
     let outcome = { status: 'failed' }
     let thrown
+    let runId
     try {
-      logger.info('[%s] start', job.name)
+      logger.info('[%s] start%s', job.name, trigger === 'manual' ? ' (run now)' : '')
       // A start line on its own shows a run that never finished (DSH stopped mid-run).
-      await this.record({ time: firedAt.toISOString(), job: job.name, event: 'start' })
+      await this.record({ time: firedAt.toISOString(), job: job.name, event: 'start', ...(trigger === 'manual' ? { trigger } : {}) })
+      runId = await this.history.begin(job.name, { trigger, startedAt: firedAt.toISOString() })
       outcome = await this.runOnce(firedAt, r => { result = r })
       return outcome
     } catch (error) {
       thrown = describeError(error)
       throw error
     } finally {
-      this.running = false
+      const endedAt = this.now()
       await this.record({
-        time: this.now().toISOString(),
+        time: endedAt.toISOString(),
         job: job.name,
         event: 'end',
         status: outcome.status,
@@ -89,6 +119,23 @@ export class JobRunner {
           stderrTail: tail(result.stderr ?? ''),
         } : {}),
       })
+      if (runId !== undefined) {
+        await this.history.finish(job.name, runId, {
+          status: outcome.status,
+          endedAt: endedAt.toISOString(),
+          durationMs: result?.durationMs ?? (endedAt.getTime() - firedAt.getTime()),
+          sessionId: outcome.sessionId,
+          error: thrown ?? outcome.error ?? result?.error,
+          ...(result ? {
+            outcome: describeOutcome(result, job),
+            exitCode: result.exitCode ?? null,
+            stdoutTail: tail(result.stdout ?? '', HISTORY_TAIL_CHARS),
+            stderrTail: tail(result.stderr ?? '', HISTORY_TAIL_CHARS),
+          } : {}),
+        })
+      }
+      this.running = false
+      this.current = null
     }
   }
 
@@ -126,13 +173,15 @@ export class JobRunner {
         }),
         title: sessionTitle(job.name, localTime),
         ...(job.agent.preset ? { agentPreset: job.agent.preset } : {}),
+        ...(agentModel(job) ? { model: agentModel(job) } : {}),
         ...(job.agent.cwd || job.cwd ? { cwd: job.agent.cwd || job.cwd } : {}),
       })
       logger.info('[%s] woke agent in session %s', job.name, sessionId)
       return { status: 'woke', sessionId }
     } catch (error) {
-      logger.warn('[%s] could not wake agent: %s', job.name, describeError(error))
-      return { status: 'wake-failed' }
+      const reason = describeError(error)
+      logger.warn('[%s] could not wake agent: %s', job.name, reason)
+      return { status: 'wake-failed', error: reason }
     }
   }
 
@@ -158,10 +207,10 @@ function describeOutcome(result, job) {
   return `exit ${result.exitCode}`
 }
 
-function tail(text) {
+function tail(text, limit = LOG_TAIL_CHARS) {
   const trimmed = text.trim()
-  if (trimmed.length <= LOG_TAIL_CHARS) return trimmed
-  return `…${trimmed.slice(-LOG_TAIL_CHARS)}`
+  if (trimmed.length <= limit) return trimmed
+  return `…${trimmed.slice(-limit)}`
 }
 
 function describeError(error) {
