@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Cron jobs",
-    "description": "Runs shell commands on cron schedules without a model, opens an agent session only when a job's command reports something to do, and adds a Cron tasks page with run history, Run now, and pause."
+    "description": "Runs shell commands and agent prompts on cron, RRULE or one-time schedules, opens an agent session only when a job's command reports something to do, lets agents create and manage jobs from a conversation, and adds a Cron tasks page with run history, Run now, pause and delete."
   }
 }

@@ -29,17 +29,17 @@ window.__ModuleLoader__.load({
       panel: 'Cron tasks',
       title: 'Cron tasks',
       'time.locale': 'en-US',
-      'heading.note': 'Jobs are defined in the plugin config.',
+      'heading.note': 'Jobs come from the plugin config or are created by an agent with the cron job tools.',
       'filter.label': 'Status',
       'filter.all': 'All',
       'filter.active': 'Active',
       'filter.paused': 'Paused',
       'filter.off': 'Off',
       'search.label': 'Search cron tasks',
-      'search.placeholder': 'Search by name or command',
+      'search.placeholder': 'Search by name, command or prompt',
       'search.clear': 'Clear search',
       'list.label': 'Cron tasks',
-      'list.empty': 'No cron jobs configured yet. Add jobs to the plugin config.',
+      'list.empty': 'No cron jobs yet. Add jobs to the plugin config, or ask an agent to schedule one.',
       'list.noMatches': 'No matching cron tasks',
       'list.emptyFilter': 'No cron tasks here',
       'list.next': 'Next ',
@@ -49,6 +49,8 @@ window.__ModuleLoader__.load({
       'state.paused': 'Paused',
       'state.disabled': 'Off in config',
       'state.invalid': 'Invalid schedule',
+      'state.ended': 'Ended',
+      'source.tool': 'Created by an agent',
       'load.error': 'Could not load cron tasks.',
       'load.retry': 'Retry',
       'load.loading': 'Loading…',
@@ -62,6 +64,10 @@ window.__ModuleLoader__.load({
       'detail.pause': 'Pause schedule',
       'detail.resume': 'Resume schedule',
       'detail.pauseUnavailable': 'Turned off in the plugin config',
+      'detail.pauseEnded': 'No more runs',
+      'detail.delete': 'Delete',
+      'detail.deleteConfirm': 'Delete "{name}" and its run history?',
+      'detail.deleteError': 'Could not delete the job: {message}',
       'detail.runNow': 'Run now',
       'detail.runBusy': 'Already running',
       'detail.started': 'Started a run.',
@@ -85,6 +91,15 @@ window.__ModuleLoader__.load({
       'field.kind': 'Type',
       'field.kindPlain': 'Plain command',
       'field.kindGated': 'Gate: wakes an agent when the command reports work',
+      'field.kindAgent': 'Agent prompt at every run (no command)',
+      'field.source': 'Created',
+      'field.sourceTool': 'By an agent, {time}',
+      'field.createdBy': 'From session',
+      'field.target': 'Delivered to',
+      'field.targetNew': 'A new session each run',
+      'field.targetNewOnce': 'One session, opened by the first run',
+      'field.targetNewOnceSession': 'Its session {id}',
+      'field.targetSession': 'Session {id}',
       'field.preset': 'Agent preset',
       'field.presetDefault': 'Host default',
       'field.agentCwd': 'Session directory',
@@ -103,6 +118,7 @@ window.__ModuleLoader__.load({
       'run.reused': 'Reused session',
       'run.queued': 'queued behind a running turn',
       'run.reuseFailed': 'new session (reuse not possible)',
+      'run.targeted': 'Sent to the job\'s session',
       'archive.pending': 'archive after the turn',
       'archive.archived': 'archived',
       'archive.kept': 'not archived',
@@ -135,17 +151,17 @@ window.__ModuleLoader__.load({
       panel: '定时命令',
       title: '定时命令',
       'time.locale': 'zh-CN',
-      'heading.note': '任务在插件配置中定义。',
+      'heading.note': '任务来自插件配置，或由智能体用定时任务工具创建。',
       'filter.label': '状态',
       'filter.all': '全部',
       'filter.active': '运行中',
       'filter.paused': '已暂停',
       'filter.off': '未启用',
       'search.label': '搜索定时命令',
-      'search.placeholder': '按名称或命令搜索',
+      'search.placeholder': '按名称、命令或提示词搜索',
       'search.clear': '清除搜索',
       'list.label': '定时命令',
-      'list.empty': '还没有配置定时命令，请在插件配置中添加。',
+      'list.empty': '还没有定时命令。可以在插件配置中添加，或让智能体创建。',
       'list.noMatches': '没有匹配的定时命令',
       'list.emptyFilter': '这里没有定时命令',
       'list.next': '下次 ',
@@ -155,6 +171,8 @@ window.__ModuleLoader__.load({
       'state.paused': '已暂停',
       'state.disabled': '配置中已关闭',
       'state.invalid': '计划无效',
+      'state.ended': '已结束',
+      'source.tool': '由智能体创建',
       'load.error': '无法加载定时命令。',
       'load.retry': '重试',
       'load.loading': '加载中…',
@@ -168,6 +186,10 @@ window.__ModuleLoader__.load({
       'detail.pause': '暂停计划',
       'detail.resume': '恢复计划',
       'detail.pauseUnavailable': '已在插件配置中关闭',
+      'detail.pauseEnded': '没有后续运行',
+      'detail.delete': '删除',
+      'detail.deleteConfirm': '删除“{name}”及其运行记录？',
+      'detail.deleteError': '无法删除任务：{message}',
       'detail.runNow': '立即运行',
       'detail.runBusy': '正在运行',
       'detail.started': '已开始运行。',
@@ -191,6 +213,15 @@ window.__ModuleLoader__.load({
       'field.kind': '类型',
       'field.kindPlain': '普通命令',
       'field.kindGated': '门控：命令报告有事时唤醒智能体',
+      'field.kindAgent': '每次运行都发送提示词（无命令）',
+      'field.source': '创建',
+      'field.sourceTool': '由智能体创建，{time}',
+      'field.createdBy': '来自会话',
+      'field.target': '发送到',
+      'field.targetNew': '每次运行开新会话',
+      'field.targetNewOnce': '首次运行时开的一个会话',
+      'field.targetNewOnceSession': '它的会话 {id}',
+      'field.targetSession': '会话 {id}',
       'field.preset': '智能体预设',
       'field.presetDefault': '主机默认',
       'field.agentCwd': '会话目录',
@@ -209,6 +240,7 @@ window.__ModuleLoader__.load({
       'run.reused': '复用了会话',
       'run.queued': '排在正在进行的回合之后',
       'run.reuseFailed': '新会话（无法复用）',
+      'run.targeted': '发送到任务的会话',
       'archive.pending': '回合结束后归档',
       'archive.archived': '已归档',
       'archive.kept': '未归档',
@@ -418,10 +450,17 @@ window.__ModuleLoader__.load({
     }
 
     const BAD = new Set(['failed', 'wake-failed', 'interrupted'])
-    const OFF = new Set(['disabled', 'invalid'])
+    const OFF = new Set(['disabled', 'invalid', 'ended'])
 
-    function scheduleText(job, t) {
-      return job.timeZone ? `${job.cron} (${job.timeZone})` : job.cron
+    function scheduleText(job) {
+      if (job.schedule?.kind === 'cron' || (!job.schedule && job.cron)) return job.timeZone ? `${job.cron} (${job.timeZone})` : job.cron
+      return job.schedule?.text ?? ''
+    }
+
+    function targetText(target, t) {
+      if (!target || target.kind === 'new') return t('field.targetNew')
+      if (target.kind === 'new_once') return target.sessionId ? t('field.targetNewOnceSession', { id: target.sessionId }) : t('field.targetNewOnce')
+      return t('field.targetSession', { id: target.sessionId })
     }
 
     function modelText(model) {
@@ -479,7 +518,8 @@ window.__ModuleLoader__.load({
       if (job.state !== 'active') {
         meta.push(h('span', { key: 'state', className: cx('dcj-metadata', job.state === 'invalid' && 'dcj-metaError') }, t(`state.${job.state}`)))
       }
-      meta.push(h('span', { key: 'cron', className: 'dcj-metadata dcj-code' }, scheduleText(job, t)))
+      if (job.source === 'tool') meta.push(h('span', { key: 'source', className: 'dcj-metadata' }, t('source.tool')))
+      meta.push(h('span', { key: 'cron', className: 'dcj-metadata dcj-code' }, scheduleText(job)))
       if (job.agent?.model) meta.push(h('span', { key: 'model', className: 'dcj-metadata' }, modelText(job.agent.model)))
       if (job.running) {
         meta.push(h('span', { key: 'running', className: 'dcj-metadata' }, t('list.running', { time: formatRelative(job.running.startedAt, locale, now) })))
@@ -509,15 +549,21 @@ window.__ModuleLoader__.load({
         h('span', { className: 'dcj-ruleValue' }, children))
     }
 
-    function Settings({ job, t }) {
+    function Settings({ job, t, onOpenSession }) {
+      const kindLabel = job.kind === 'agent' ? 'field.kindAgent' : job.gated ? 'field.kindGated' : 'field.kindPlain'
       const rows = [
-        h(RuleRow, { key: 'schedule', label: t('field.schedule') }, h('span', { className: 'dcj-code' }, job.cron)),
+        job.source === 'tool' && h(RuleRow, { key: 'source', label: t('field.source') }, t('field.sourceTool', { time: formatAbsolute(job.createdAt, t('time.locale')) })),
+        job.createdBy && h(RuleRow, { key: 'createdBy', label: t('field.createdBy') }, h('button', { type: 'button', className: 'dcj-linkButton dcj-code', onClick: () => onOpenSession(job.createdBy) }, job.createdBy)),
+        h(RuleRow, { key: 'schedule', label: t('field.schedule'), stack: job.schedule?.kind === 'rrule' }, h('span', { className: 'dcj-code' }, job.schedule?.kind === 'rrule' ? job.schedule.rrule : (job.schedule?.kind === 'at' ? job.schedule.at : job.cron))),
         h(RuleRow, { key: 'zone', label: t('field.timeZone') }, job.timeZone || t('field.timeZoneHost')),
-        h(RuleRow, { key: 'command', label: t('field.command'), stack: true }, h('pre', { className: 'dcj-pre' }, job.command)),
-        h(RuleRow, { key: 'cwd', label: t('field.cwd') }, job.cwd ? h('span', { className: 'dcj-code' }, job.cwd) : t('field.cwdHost')),
-        h(RuleRow, { key: 'timeout', label: t('field.timeout') }, job.timeoutSeconds > 0 ? t('field.timeoutValue', { seconds: job.timeoutSeconds }) : t('field.timeoutNone')),
-        h(RuleRow, { key: 'kind', label: t('field.kind') }, t(job.gated ? 'field.kindGated' : 'field.kindPlain')),
-      ]
+        h(RuleRow, { key: 'kind', label: t('field.kind') }, t(kindLabel)),
+        job.command && h(RuleRow, { key: 'command', label: t('field.command'), stack: true }, h('pre', { className: 'dcj-pre' }, job.command)),
+        job.command && h(RuleRow, { key: 'cwd', label: t('field.cwd') }, job.cwd ? h('span', { className: 'dcj-code' }, job.cwd) : t('field.cwdHost')),
+        job.command && h(RuleRow, { key: 'timeout', label: t('field.timeout') }, job.timeoutSeconds > 0 ? t('field.timeoutValue', { seconds: job.timeoutSeconds }) : t('field.timeoutNone')),
+        job.target && h(RuleRow, { key: 'target', label: t('field.target') }, job.target.sessionId
+          ? h('button', { type: 'button', className: 'dcj-linkButton', onClick: () => onOpenSession(job.target.sessionId) }, targetText(job.target, t))
+          : targetText(job.target, t)),
+      ].filter(Boolean)
       if (job.agent) {
         rows.push(...[
           h(RuleRow, { key: 'preset', label: t('field.preset') }, job.agent.preset || t('field.presetDefault')),
@@ -547,6 +593,7 @@ window.__ModuleLoader__.load({
       if (typeof run.exitCode === 'number') meta.push(t('run.exit', { code: run.exitCode }))
       if (run.outcome && !/^exit \d+$/.test(run.outcome)) meta.push(run.outcome)
       if (run.reused) meta.push(run.queued ? `${t('run.reused')} (${t('run.queued')})` : t('run.reused'))
+      else if (run.targeted) meta.push(run.queued ? `${t('run.targeted')} (${t('run.queued')})` : t('run.targeted'))
       else if (run.reuseNote) meta.push(t('run.reuseFailed'))
       if (run.archive) meta.push(t(`archive.${run.archive}`) + (run.archiveNote ? `: ${run.archiveNote}` : ''))
       const hasOutput = Boolean(run.stdoutTail || run.stderrTail || run.error || run.reuseNote)
@@ -580,7 +627,7 @@ window.__ModuleLoader__.load({
         retention && h('div', { className: 'dcj-retention' }, t('runs.retention', { count: retention })))
     }
 
-    function MoreMenu({ t, busy, onRunNow }) {
+    function MoreMenu({ t, busy, onRunNow, onDelete }) {
       const [open, setOpen] = useState(false)
       const rootRef = useRef(null)
       const close = useCallback(() => setOpen(false), [])
@@ -596,7 +643,11 @@ window.__ModuleLoader__.load({
             type: 'button', role: 'menuitem', className: 'dcj-menuItem', disabled: busy,
             title: busy ? t('detail.runBusy') : undefined, autoFocus: true,
             onClick: () => { setOpen(false); onRunNow() },
-          }, h(IconPlay, null), t(busy ? 'detail.runBusy' : 'detail.runNow'))))
+          }, h(IconPlay, null), t(busy ? 'detail.runBusy' : 'detail.runNow')),
+          onDelete && h('button', {
+            type: 'button', role: 'menuitem', className: 'dcj-menuItem',
+            onClick: () => { setOpen(false); onDelete() },
+          }, h(IconClose, null), t('detail.delete'))))
     }
 
     function Detail({ job, call, t, locale, now, historyRecords, onClose, onChanged, onOpenSession }) {
@@ -607,26 +658,27 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = useState(null)
       const [pending, setPending] = useState(false)
       const name = job.name
+      const id = job.id ?? job.name
       const lastKey = job.lastRun ? `${job.lastRun.id}:${job.lastRun.status}` : ''
 
       const loadRuns = useCallback(async () => {
-        const result = await call('runs', { name })
+        const result = await call('runs', { id })
         if (result.ok) {
           setRuns(result.value.runs)
           setRunsError(false)
         } else {
           setRunsError(true)
         }
-      }, [call, name])
+      }, [call, id])
 
-      useEffect(() => { setRuns(undefined); setFailure(null); setNotice(null) }, [name])
+      useEffect(() => { setRuns(undefined); setFailure(null); setNotice(null) }, [id])
       // Reload the runs whenever the job's latest run changes.
       useEffect(() => { loadRuns() }, [loadRuns, lastKey])
 
       const togglePause = async () => {
         setPending(true)
         setFailure(null)
-        const result = await call('pause', { name, paused: !job.paused })
+        const result = await call('pause', { id, paused: !job.paused })
         setPending(false)
         if (!result.ok) setFailure(t('detail.pauseError', { message: errorMessage(result, '') }))
         onChanged()
@@ -634,14 +686,21 @@ window.__ModuleLoader__.load({
       const runNow = async () => {
         setFailure(null)
         setNotice(null)
-        const result = await call('run', { name })
+        const result = await call('run', { id })
         if (result.ok) setNotice(t('detail.started'))
         else setFailure(t('detail.runError', { message: errorMessage(result, '') }))
         onChanged()
       }
+      const remove = async () => {
+        if (!window.confirm(t('detail.deleteConfirm', { name }))) return
+        setFailure(null)
+        const result = await call('delete', { id })
+        if (!result.ok) setFailure(t('detail.deleteError', { message: errorMessage(result, '') }))
+        onChanged()
+      }
 
       const pauseBlocked = OFF.has(job.state)
-      const pauseLabel = pauseBlocked ? t('detail.pauseUnavailable') : t(job.paused ? 'detail.resume' : 'detail.pause')
+      const pauseLabel = job.state === 'ended' ? t('detail.pauseEnded') : pauseBlocked ? t('detail.pauseUnavailable') : t(job.paused ? 'detail.resume' : 'detail.pause')
       const latestSession = (runs ?? []).find(run => run.sessionId)?.sessionId ?? (job.lastRun?.sessionId || null)
 
       const notices = []
@@ -672,7 +731,7 @@ window.__ModuleLoader__.load({
             type: 'button', className: 'dcj-btn dcj-btnGhost dcj-iconButton', 'aria-label': pauseLabel,
             disabled: pauseBlocked || pending, onClick: togglePause,
           }, h(job.paused ? IconPlay : IconPause, null))),
-          h(MoreMenu, { t, busy: Boolean(job.running), onRunNow: runNow }),
+          h(MoreMenu, { t, busy: Boolean(job.running), onRunNow: runNow, onDelete: job.source === 'tool' ? remove : undefined }),
           h('button', {
             type: 'button', className: 'dcj-btn dcj-btnGhost dcj-iconButton', title: t('detail.close'),
             'aria-label': t('detail.close'), onClick: onClose,
@@ -686,7 +745,7 @@ window.__ModuleLoader__.load({
         notice && h('p', { className: 'dcj-detailNotice', role: 'status' }, notice),
         failure && h('p', { className: 'dcj-failure', role: 'alert' }, failure),
         tab === 'settings'
-          ? h(Settings, { job, t })
+          ? h(Settings, { job, t, onOpenSession })
           : h(Runs, { runs, error: runsError, retention: historyRecords, t, locale, onOpenSession, onRetry: loadRuns })),
       job.gated && h('div', { className: 'dcj-footer' },
         latestSession
@@ -742,9 +801,9 @@ window.__ModuleLoader__.load({
       const rows = useMemo(() => {
         const query = search.trim().toLowerCase()
         return jobs.filter(job => stateMatches(job, filter) && (query === ''
-          || job.name.toLowerCase().includes(query) || job.command.toLowerCase().includes(query)))
+          || [job.name, job.command, job.agent?.prompt].some(text => typeof text === 'string' && text.toLowerCase().includes(query))))
       }, [jobs, filter, search])
-      const selectedJob = selected === null ? undefined : jobs.find(job => job.name === selected)
+      const selectedJob = selected === null ? undefined : jobs.find(job => (job.id ?? job.name) === selected)
 
       useEffect(() => {
         if (data !== undefined && selected !== null && selectedJob === undefined) setSelected(null)
@@ -790,12 +849,12 @@ window.__ModuleLoader__.load({
               h('h2', null, t(emptyTitle))),
             h('ul', { className: 'dcj-listRows', 'aria-label': t('list.label'), 'aria-busy': data === undefined },
               rows.map(job => h(ListRow, {
-                key: job.name, job, t, locale, now,
-                selected: job.name === selected,
-                onSelect: () => setSelected(job.name),
+                key: job.id ?? job.name, job, t, locale, now,
+                selected: (job.id ?? job.name) === selected,
+                onSelect: () => setSelected(job.id ?? job.name),
               })))))),
       selectedJob && h(Detail, {
-        key: selectedJob.name,
+        key: selectedJob.id ?? selectedJob.name,
         job: selectedJob, call, t, locale, now,
         historyRecords: data?.historyRecords,
         onClose: () => setSelected(null),
