@@ -2,8 +2,10 @@
  * DeepSeek Harness Host plugin: run shell commands on cron schedules inside
  * the Host process, and optionally open an agent session when a gate
  * command's output asks for one. Run history and pause state are kept in
- * DSH's storage domain service; the "Cron tasks" Web page (client.js) reads
- * and controls them over authenticated routes on DSH's /api channel.
+ * DSH's storage domain service, as are jobs created with the model-facing
+ * tools (tools.js), which reach the running scheduler through the
+ * `cronJobs` service provided here. The "Cron tasks" Web page (client.js)
+ * reads and controls jobs over authenticated routes on DSH's /api channel.
  */
 import { Config } from './src/config.js'
 import { runCommand } from './src/command.js'
@@ -24,6 +26,10 @@ export { Config }
 export function apply(ctx, config) {
   const logger = ctx.logger('cron-jobs')
   let current
+
+  // The tools plugin looks this up at call time; `controller()` is undefined
+  // while the jobs start or stop.
+  ctx.provide?.('cronJobs', Object.freeze({ controller: () => current }))
 
   ctx.effect(() => {
     // Aborting stops commands still running when the plugin unloads.
