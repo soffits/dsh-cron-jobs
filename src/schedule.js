@@ -241,6 +241,29 @@ export class ScheduleTimer {
   }
 }
 
+/**
+ * A cron timer with croner's constructor shape (`pattern, { timezone, paused },
+ * callback`) built on {@link ScheduleTimer}; the controller's default for
+ * config cron jobs.
+ *
+ * croner's own timer is not used. croner 10's could silently skip a tick
+ * (fixed in 11): when its timeout woke a little before the due time, it
+ * re-armed with a due time computed again from "now", which could already be
+ * past it. ScheduleTimer keeps the due occurrence fixed until it has fired,
+ * so the controller's watchdog can see a tick that did not run.
+ */
+export class CronTimer extends ScheduleTimer {
+  /**
+   * @param {string} pattern
+   * @param {{ timezone?: string, paused?: boolean, now?: () => number }} [options]
+   * @param {() => void} [callback]
+   */
+  constructor(pattern, { timezone, paused = false, now = Date.now } = {}, callback = () => {}) {
+    const schedule = parseSchedule({ kind: 'cron', expression: pattern, ...(timezone ? { timeZone: timezone } : {}) })
+    super(schedule, { onFire: () => callback(), paused, now })
+  }
+}
+
 function describe(error) {
   return error instanceof Error ? error.message : String(error)
 }
