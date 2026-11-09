@@ -91,7 +91,7 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
 | Field | Meaning |
 |---|---|
 | `name` | Job name, used in logs and session titles. Must be unique. |
-| `cron` | Cron expression: 5 fields, or 6 with seconds first. Parsed by [croner](https://github.com/hexagon/croner). Set exactly one of `cron`, `rrule` and `at`. |
+| `cron` | Cron expression: 5 fields, or 6 with seconds first. Parsed by [croner](https://github.com/hexagon/croner), which handles daylight-saving changes like Vixie cron: a fixed time skipped by a spring forward runs at the first valid time after the gap, a fixed time repeated by a fall back runs once, and patterns with several hours, minutes or seconds run on both repeated occurrences. Set exactly one of `cron`, `rrule` and `at`. |
 | `rrule` | RFC 5545 schedule: a `DTSTART` line and an `RRULE` line. The time zone comes from `DTSTART` (`TZID=...`, or `Z` for UTC). See [Schedules](#schedules). |
 | `at` | Run once at this time: ISO 8601 with an offset, or a local date-time read in `timeZone`. |
 | `timeZone` | IANA time zone for the cron expression or an `at` without offset. The Host's zone when empty. |

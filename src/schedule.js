@@ -246,13 +246,11 @@ export class ScheduleTimer {
  * callback`) built on {@link ScheduleTimer}; the controller's default for
  * config cron jobs.
  *
- * croner's own timer is not used because it can silently skip a tick. When
- * its timeout wakes a little before the due time, it re-arms with a due time
- * computed again from "now"; for a timer that has not fired yet in this
- * process (every timer right after a start or a plugin reload), "now" can
- * already be past the due time by then, so the next occurrence is taken and
- * the due one is dropped without a trace. ScheduleTimer keeps the due
- * occurrence fixed until it has fired. croner still computes the occurrences.
+ * croner's own timer is not used. croner 10's could silently skip a tick
+ * (fixed in 11): when its timeout woke a little before the due time, it
+ * re-armed with a due time computed again from "now", which could already be
+ * past it. ScheduleTimer keeps the due occurrence fixed until it has fired,
+ * so the controller's watchdog can see a tick that did not run.
  */
 export class CronTimer extends ScheduleTimer {
   /**

@@ -96,20 +96,49 @@ test('CronTimer keeps a due tick when its timeout wakes early and the clock pass
   // then is past it, and moves on to the next hour.
   const due = Date.parse('2026-11-08T19:23:00Z')
   let clock = due - 4000
+  // The first read after the wake sees 1 ms before the due time; every later
+  // read is at the due time, as when the clock ticks during the wake.
+  let early = false
+  const now = () => {
+    if (!early) return clock
+    early = false
+    return due - 1
+  }
   const fired = []
-  const timer = new CronTimer('23 * * * *', { timezone: 'America/Toronto', now: () => clock }, () => fired.push(clock))
+  const timer = new CronTimer('23 * * * *', { timezone: 'America/Toronto', now }, () => fired.push(clock))
   try {
     assert.equal(timer.nextRun().getTime(), due)
-    clock = due - 1 // the timeout wakes 1 ms early
+    clock = due
+    early = true // the timeout wakes 1 ms early
     timer.wake()
     assert.deepEqual(fired, [], 'nothing runs before the due time')
     assert.equal(timer.nextRun().getTime(), due, 'the due tick is kept')
-    clock = due // the re-armed timeout wakes at the due time
-    timer.wake()
+    timer.wake() // the re-armed timeout
     assert.deepEqual(fired, [due])
     assert.equal(timer.nextRun().toISOString(), '2026-11-08T20:23:00.000Z')
   } finally {
     timer.stop()
+  }
+})
+
+test('a cron schedule always moves forward across daylight-saving changes', () => {
+  // croner 10 answered a time in the past for a reference inside the
+  // repeated hour of a fall back (06:00Z -> 05:23Z), so a timer armed then
+  // fired over and over. Fall back 2026-11-01, spring forward 2026-03-08.
+  const cases = [
+    ['23 * * * *', '2026-11-01T04:00:00Z', '2026-11-01T08:00:00Z', 4],
+    ['*/5 * * * *', '2026-11-01T05:00:00Z', '2026-11-01T07:00:00Z', 23],
+    ['30 2 * * *', '2026-03-07T12:00:00Z', '2026-03-09T12:00:00Z', 2],
+    ['23 * * * *', '2026-03-08T05:00:00Z', '2026-03-08T09:00:00Z', 4],
+  ]
+  for (const [expression, from, to, runs] of cases) {
+    const schedule = parseSchedule({ kind: 'cron', expression, timeZone: 'America/Toronto' })
+    for (let t = at(from); t < at(to); t += 60_000) {
+      assert.ok(schedule.next(t).getTime() > t, `${expression} after ${new Date(t).toISOString()}`)
+    }
+    let count = 0
+    for (let t = schedule.next(at(from)).getTime(); t < at(to); t = schedule.next(t).getTime()) count++
+    assert.equal(count, runs, `${expression} runs from ${from} to ${to}`)
   }
 })
 

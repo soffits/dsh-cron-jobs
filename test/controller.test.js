@@ -242,6 +242,31 @@ test('the watchdog runs a tick whose timer was lost, logs it once, and skips pau
   await controller.stop()
 })
 
+test('a lost CronTimer tick runs once through the watchdog, never twice', async () => {
+  let clock = new Date('2026-11-08T19:22:00Z')
+  let runs = 0
+  const controller = new CronJobs({
+    jobs: [{ name: 'a', cron: '23 * * * *', timeZone: 'America/Toronto', command: 'true' }],
+    logger: quiet, run: async () => { runs++; return okResult }, wake: async () => '', now: () => clock, watchdogMs: 0,
+  }).start()
+  try {
+    const timer = controller.entries.get('a').timer
+    timer.clear() // the timeout is lost
+    clock = new Date('2026-11-08T19:24:30Z')
+    assert.deepEqual(controller.checkOverdue(), ['a'])
+    assert.deepEqual(controller.checkOverdue(), [], 'one re-arm per lost tick')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(runs, 1)
+    assert.equal(controller.get('a').nextRunAt, '2026-11-08T20:23:00.000Z')
+    assert.deepEqual(controller.checkOverdue(), [])
+    timer.wake() // a stray late wake of the old timeout finds nothing due
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(runs, 1)
+  } finally {
+    await controller.stop()
+  }
+})
+
 test('a tick within the grace period is not overdue', async () => {
   const controller = new CronJobs({
     jobs: [{ name: 'a', cron: 'p', command: 'true' }],
