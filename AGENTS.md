@@ -24,6 +24,8 @@
 - **The answer is found by message id**: the runner gives the prompt its own id, and the answer is the last assistant text between that `user/message` event and the next `turn/end`. Pending deliveries keep the id in the run history and resume after a restart, like pending archives.
 - **Gate failures and failed wakes are delivered too**, not only command-job failures, so a broken job never goes quiet. A run aborted by an unload delivers nothing.
 
+- **Page transport: exact `/api` Fetch routes for now, RPC later.** `ctx.connection.rpc.handle` throws 'cannot get property webServer without inject' in DSH 0.2.2-rc.1 (see `src/rpc.js`). On each new DSH release, try `rpc.handle` again; once it mounts, move the page back to RPC and drop the Fetch routes in one change (Livia, 2026-11-08: a todo for later).
+
 ## Checks before a release
 
 `npm test`, `npm run check`, then CI on push. The page has no automated test; render it once with stored, config, ended and agent-only jobs before releasing a page change.
