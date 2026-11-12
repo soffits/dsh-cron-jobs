@@ -74,6 +74,24 @@ test('the final answer is the last assistant text of the turn the prompt started
   assert.deepEqual(finalAnswer(turn('m1', [], 'error'), 'm1'), { done: true, text: '', reason: 'error' })
 })
 
+test('the final answer is the last text block when one message holds several', () => {
+  const message = content => ({ type: 'assistant/message', data: { message: { role: 'assistant', content } } })
+  const log = [
+    { type: 'user/message', data: { id: 'm1', role: 'user', content: [] } },
+    message([
+      { type: 'text', text: 'Checking the mailbox first.' },
+      { type: 'tool-call', id: 'c1', name: 'Bash', arguments: '{}' },
+      { type: 'text', text: 'Nothing new.' },
+      { type: 'text', text: '[SILENT]\n' },
+      { type: 'text', text: '  ' },
+    ]),
+    { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const answer = finalAnswer(log, 'm1')
+  assert.deepEqual(answer, { done: true, text: '[SILENT]', reason: 'completed' })
+  assert.equal(messageFromText(answer.text), undefined)
+})
+
 test('sendMessage calls send({ to, text, files, from }) on the named service', async () => {
   const calls = []
   const result = await sendMessage({

@@ -119,10 +119,13 @@ export function failureLine(job, result) {
 }
 
 /**
- * The final answer of the turn that a given message started: the text of the
- * last assistant message between that `user/message` event and the next
- * `turn/end`. `done` is false while the turn is still open, or the message
- * has not entered a turn yet.
+ * The final answer of the turn that a given message started: the last text
+ * block of the last assistant message between that `user/message` event and
+ * the next `turn/end`. Only the last block counts because some providers
+ * (Claude Code through dsh-oh-my-claude) put every text block of their own
+ * inner tool loop into one assistant message, so narration would otherwise
+ * be glued in front of a final `[SILENT]`. `done` is false while the turn is
+ * still open, or the message has not entered a turn yet.
  * @param {Array<{ type: string, data?: any }>} log - The session's event log.
  * @param {string} messageId - Id of the prompt the job sent.
  * @returns {{ done: boolean, text?: string, reason?: string }}
@@ -135,7 +138,9 @@ export function finalAnswer(log, messageId) {
     const event = log[i]
     if (event.type === 'assistant/message') {
       const parts = event.data?.message?.content ?? []
-      text = parts.filter(part => part?.type === 'text').map(part => part.text).join('').trim()
+      const texts = parts.filter(part => part?.type === 'text' && typeof part.text === 'string')
+        .map(part => part.text.trim()).filter(Boolean)
+      text = texts.at(-1) ?? ''
     } else if (event.type === 'turn/end') {
       // dsh-fallback-models stops a turn whose model failed and continues the
       // work in the next turn on a fallback model; the answer is there.
