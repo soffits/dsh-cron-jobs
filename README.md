@@ -14,10 +14,10 @@ Jobs run on cron expressions, RFC 5545 RRULE schedules, or once at a given time.
 
 ## Install
 
-Install it into the `web` profile straight from GitHub:
+Install it into the `web` profile from npm:
 
 ```sh
-dsh plugin --profile web add github:soffits/dsh-cron-jobs
+dsh plugin --profile web add @soffits/dsh-cron-jobs
 ```
 
 Then restart `dsh web` (or enable it on the Plugins page). To work on it locally instead, clone the repository, install its dependencies, and install the directory as a bundle:
@@ -34,7 +34,7 @@ Then ask the agent to install it, or call the plugin manager yourself:
 plugin_manager install_bundle /absolute/path/to/dsh-cron-jobs
 ```
 
-The bundle adds two rows: `cron-jobs`, the scheduler, and `cron-jobs-tools`, which gives every agent the tools described in [Jobs created from a conversation](#jobs-created-from-a-conversation). To give the tools to one agent preset only, disable the `cron-jobs-tools` row and mount `dsh-cron-jobs/tools` in that preset instead.
+The bundle adds two rows: `cron-jobs`, the scheduler, and `cron-jobs-tools`, which gives every agent the tools described in [Jobs created from a conversation](#jobs-created-from-a-conversation). To give the tools to one agent preset only, disable the `cron-jobs-tools` row and mount `@soffits/dsh-cron-jobs/tools` in that preset instead.
 
 Built and tested against DSH 0.2.2-rc.1 (`engines.dsh` is `>=0.2.2-rc.1 <0.3.0-0`). Commands run with `bash -c`, or `sh -c` when bash is missing, so the Host needs a POSIX shell. The plugin needs DSH's storage domain service (`@deepseek-ai/dsh-storage-domain`, part of every standard DSH composition) for run history and pause state.
 

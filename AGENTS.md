@@ -3,7 +3,7 @@
 ## Layout
 
 - `index.js`: the scheduler plugin (`cron-jobs` row). Opens storage, starts `CronJobs`, provides the `cronJobs` service, serves the page routes.
-- `tools.js`: the model-facing tools (`cron-jobs-tools` row, `dsh-cron-jobs/tools`). Looks up `cronJobs` at call time instead of injecting it, so a reload of the scheduler row (any config change) never unregisters the tools. DSH sessions on some providers fail for good when a tool they used disappears.
+- `tools.js`: the model-facing tools (`cron-jobs-tools` row, `@soffits/dsh-cron-jobs/tools`). Looks up `cronJobs` at call time instead of injecting it, so a reload of the scheduler row (any config change) never unregisters the tools. DSH sessions on some providers fail for good when a tool they used disappears.
 - `src/controller.js`: all jobs, timers, pause, create/update/delete of stored jobs, read model.
 - `src/job.js`: one run (command, wake rule, delivery to a new, reused or target session, auto-archive).
 - `src/deliver.js`: result delivery (target resolution, MEDIA lines, failure notes, final-answer lookup in the session log, `send` with retries). `src/session.js` `waitForAnswer` waits for the woken turn.

@@ -1,11 +1,11 @@
 # Bundle layer for dsh-cron-jobs. Config jobs are set on the cron-jobs row,
 # either in the profile patch or on the plugin's settings page. The tools row
 # registers the model-facing tools for every agent; disable it, or mount
-# `dsh-cron-jobs/tools` in one agent preset instead, to limit who gets them.
+# `@soffits/dsh-cron-jobs/tools` in one agent preset instead, to limit who gets them.
 - insert:
     - id: cron-jobs
-      name: 'dsh-cron-jobs'
+      name: '@soffits/dsh-cron-jobs'
       config:
         jobs: []
     - id: cron-jobs-tools
-      name: 'dsh-cron-jobs/tools'
+      name: '@soffits/dsh-cron-jobs/tools'
