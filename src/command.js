@@ -53,6 +53,7 @@ class TailBuffer {
  * @param {number} [options.timeoutMs] - Stop the run after this many milliseconds; 0 or omitted means no limit.
  * @param {AbortSignal} [options.signal] - Stops the run when aborted.
  * @param {NodeJS.ProcessEnv} [options.env] - Environment; the host environment when omitted.
+ * @param {string} [options.input] - Text written to the command's stdin; stdin is closed (ignored) when omitted.
  * @param {string[]} [options.shells] - Shells tried in order until one starts.
  * @returns {Promise<CommandResult>}
  *
@@ -68,7 +69,7 @@ class TailBuffer {
  * @property {number} stdoutDropped - Bytes of stdout dropped from the front.
  * @property {number} durationMs
  */
-export async function runCommand({ command, cwd, timeoutMs, signal, env, shells = ['bash', 'sh'] }) {
+export async function runCommand({ command, cwd, timeoutMs, signal, env, input, shells = ['bash', 'sh'] }) {
   const started = Date.now()
   if (cwd !== undefined && !(await isDirectory(cwd))) {
     return {
@@ -79,7 +80,7 @@ export async function runCommand({ command, cwd, timeoutMs, signal, env, shells 
   }
   let last
   for (const shell of shells) {
-    last = await runWith(shell, { command, cwd, timeoutMs, signal, env })
+    last = await runWith(shell, { command, cwd, timeoutMs, signal, env, input })
     if (last.spawnMissing !== true) break
   }
   const { spawnMissing, ...result } = last
@@ -94,7 +95,7 @@ async function isDirectory(path) {
   }
 }
 
-function runWith(shell, { command, cwd, timeoutMs, signal, env }) {
+function runWith(shell, { command, cwd, timeoutMs, signal, env, input }) {
   return new Promise((resolve) => {
     const stdout = new TailBuffer(MAX_STDOUT_BYTES)
     const stderr = new TailBuffer(MAX_STDERR_BYTES)
@@ -115,7 +116,7 @@ function runWith(shell, { command, cwd, timeoutMs, signal, env }) {
       child = spawn(shell, ['-c', command], {
         cwd,
         env: env ?? process.env,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
         windowsHide: true,
       })
@@ -142,6 +143,11 @@ function runWith(shell, { command, cwd, timeoutMs, signal, env }) {
       timer.unref?.()
     }
 
+    if (input !== undefined) {
+      // A command that exits without reading its stdin closes the pipe; that is not a failure.
+      child.stdin.on('error', () => {})
+      child.stdin.end(input)
+    }
     child.stdout.on('data', chunk => stdout.push(chunk))
     child.stderr.on('data', chunk => stderr.push(chunk))
     child.on('error', (error) => {

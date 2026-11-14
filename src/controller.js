@@ -72,7 +72,7 @@ export class CronJobs {
    * @param {number} [options.watchdogMs] - How often the watchdog looks for lost timers; 0 turns it off.
    * @param {number} [options.overdueMs] - How far past its due time a tick must be before the watchdog runs it.
    */
-  constructor({ jobs, logger, run, wake, reuse, settle, send, answer, defaults = {}, signal, record, history, CronClass = CronTimer, TimerClass = ScheduleTimer, now = () => new Date(), watchdogMs = WATCHDOG_MS, overdueMs = OVERDUE_MS }) {
+  constructor({ jobs, logger, run, wake, reuse, settle, send, answer, checks, defaults = {}, signal, record, history, CronClass = CronTimer, TimerClass = ScheduleTimer, now = () => new Date(), watchdogMs = WATCHDOG_MS, overdueMs = OVERDUE_MS }) {
     this.logger = logger
     this.defaults = defaults
     this.history = history
@@ -83,7 +83,7 @@ export class CronJobs {
     this.watchdogMs = watchdogMs
     this.overdueMs = overdueMs
     this.record = record ?? (async () => {})
-    this.deps = { run, wake, reuse, settle, send, answer, defaults, logger, signal, record, history, now }
+    this.deps = { run, wake, reuse, settle, send, answer, checks, defaults, logger, signal, record, history, now }
     /** @type {Map<string, { job: object, runner: JobRunner, spec?: object, record?: object, timer?: any, error?: string }>} */
     this.entries = new Map()
     this.inflight = new Set()
@@ -357,6 +357,7 @@ export class CronJobs {
       title: title(input.title),
       ...text('prompt', input.prompt),
       ...text('command', input.command),
+      ...text('answerCheck', input.answerCheck),
       schedule: spec,
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(input.preset ? { preset: input.preset } : {}),
@@ -393,7 +394,7 @@ export class CronJobs {
     const current = entry.record
     const next = { ...current, updatedAt: now.toISOString() }
     if (patch.title !== undefined) next.title = title(patch.title)
-    for (const field of ['prompt', 'command']) {
+    for (const field of ['prompt', 'command', 'answerCheck']) {
       if (patch[field] === undefined) continue
       delete next[field]
       Object.assign(next, text(field, patch[field]))
@@ -536,7 +537,7 @@ function fromStored(record) {
     ...(record.cwd ? { cwd: record.cwd } : {}),
     timeoutSeconds: record.timeoutSeconds ?? DEFAULT_STORED_TIMEOUT_SECONDS,
     timeZone: scheduleZone(record.schedule),
-    ...(record.prompt ? { agent: { prompt: record.prompt, ...(record.preset ? { preset: record.preset } : {}), ...(record.cwd ? { cwd: record.cwd } : {}), ...(record.model ? { model: record.model } : {}) } } : {}),
+    ...(record.prompt ? { agent: { prompt: record.prompt, ...(record.preset ? { preset: record.preset } : {}), ...(record.cwd ? { cwd: record.cwd } : {}), ...(record.model ? { model: record.model } : {}), ...(record.answerCheck ? { answerCheck: record.answerCheck } : {}) } } : {}),
     target: record.target,
     ...(record.deliver !== undefined ? { deliver: record.deliver } : {}),
     spec: record.schedule,
@@ -604,6 +605,7 @@ function agentView(job, defaults) {
     // Where the cwd came from: the job, the plugin default, or the job's command cwd.
     cwdSource: job.agent.cwd ? 'job' : defaults.agentCwd ? 'default' : job.cwd ? 'command' : null,
     model: agentModel(job) ?? null,
+    answerCheck: job.agent.answerCheck || null,
     // An explicit session is never archived or swapped for another one.
     autoArchive: target === 'session' ? false : settings.autoArchive,
     reuseWithinHours: target === 'new' ? settings.reuseWithinHours : 0,

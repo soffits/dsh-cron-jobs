@@ -14,6 +14,7 @@ import { runCommand } from './src/command.js'
 import { archiveWhenIdle, deliverToSession, openAgentSession, waitForAnswer } from './src/session.js'
 import { sendMessage } from './src/deliver.js'
 import { CronJobs } from './src/controller.js'
+import { createAnswerChecks } from './src/answer-check.js'
 import { createRunLog } from './src/runlog.js'
 import { openHistory } from './src/history.js'
 import { createRoutes, createRpcHandler } from './src/rpc.js'
@@ -39,11 +40,16 @@ export function apply(ctx, config) {
     const controller = new AbortController()
     let jobs
     let history
+    let checks
+    // A job's answerCheck runs as the turn its prompt started is about to close.
+    const stopTurnHook = ctx.on?.('agent/turn-stopping', payload => checks?.onTurnStopping(payload))
     const ready = (async () => {
       history = await openHistory(ctx.storageDomain, {
         limit: config.historyRecords, logger, signal: controller.signal,
       })
       if (controller.signal.aborted) return
+      const record = createRunLog(config.runLog || undefined, logger)
+      checks = createAnswerChecks({ run: runCommand, logger, record })
       jobs = new CronJobs({
         jobs: config.jobs ?? [],
         logger,
@@ -55,6 +61,7 @@ export function apply(ctx, config) {
         // this plugin, reload, or be missing (the run records the failure).
         send: (target, message, from) => sendMessage({ lookup: name => ctx.get(name), target, message, from, signal: controller.signal }),
         answer: (sessionId, messageId, options) => waitForAnswer(ctx, sessionId, messageId, options),
+        checks,
         defaults: {
           agentCwd: config.defaultAgentCwd || undefined,
           autoArchive: config.autoArchive ?? true,
@@ -62,13 +69,14 @@ export function apply(ctx, config) {
           deliver: config.deliver,
         },
         signal: controller.signal,
-        record: createRunLog(config.runLog || undefined, logger),
+        record,
         history,
       }).start()
       current = jobs
     })().catch(error => logger.error('cron jobs not started: %s', error instanceof Error ? error.message : String(error)))
     return async () => {
       current = undefined
+      stopTurnHook?.()
       // Stop the timers first so no new run starts with an aborted signal.
       const stopping = jobs?.stop()
       controller.abort()
