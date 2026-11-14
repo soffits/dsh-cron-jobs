@@ -40,11 +40,11 @@ function setup({ jobs = [], sessions = ['session-other'] } = {}) {
   return { controller, defs, call, setUnavailable: () => { available = false } }
 }
 
-test('the four tools have the configured prefix and object schemas', () => {
+test('the five tools have the configured prefix and object schemas', () => {
   const names = tools.createTools({ getJobs: () => undefined }).map(d => d.name)
-  assert.deepEqual(names, ['cron_job_create', 'cron_job_edit', 'cron_job_list', 'cron_job_view'])
+  assert.deepEqual(names, ['cron_job_create', 'cron_job_edit', 'cron_job_list', 'cron_job_view', 'cron_job_watch'])
   const builtInNames = tools.createTools({ prefix: 'schedule', getJobs: () => undefined }).map(d => d.name)
-  assert.deepEqual(builtInNames, ['schedule_create', 'schedule_edit', 'schedule_list', 'schedule_view'])
+  assert.deepEqual(builtInNames, ['schedule_create', 'schedule_edit', 'schedule_list', 'schedule_view', 'schedule_watch'])
   for (const schema of Object.values(tools.toolSchemas('cron_job'))) {
     assert.equal(schema.type, 'object')
     assert.equal(schema.additionalProperties, false)
@@ -168,4 +168,39 @@ test('create and edit set, change and clear a job\'s model; list and view show i
   assert.equal((await call('create', { title: 'x', prompt: 'x', cron: '0 9 * * *', timeZone: 'UTC', model: { provider: 'a', extra: 1 } })).code, 'invalid_arguments')
   const plain = await call('create', { title: 'Plain', prompt: 'hi', at: '2026-11-09T09:00:00Z' })
   assert.equal(plain.model, undefined)
+})
+
+test('create and edit take on and once; list shows them', async () => {
+  const { call } = setup()
+  const job = await call('create', { title: 'Verify DSH', prompt: 'Check DSH.', on: ['dsh.started'], once: true })
+  assert.equal(job.state, 'active')
+  assert.deepEqual(job.on, ['dsh.started'])
+  assert.equal(job.once, true)
+  assert.equal(job.schedule, null)
+  assert.match((await call('create', { title: 'x', prompt: 'y', on: 'dsh.started' })).message, /on must be an array/)
+  assert.match((await call('create', { title: 'x', prompt: 'y', on: [1] })).message, /only strings/)
+  assert.equal((await call('create', { title: 'x', prompt: 'y', on: ['bad pattern'] })).code, 'invalid_job')
+  const edited = await call('edit', { id: job.id, action: 'update', on: ['dsh.started', 'ci.*'], once: false, cron: '0 */2 * * *', timeZone: 'America/Toronto' })
+  assert.deepEqual(edited.on, ['dsh.started', 'ci.*'])
+  assert.equal(edited.once, undefined)
+  assert.equal(edited.schedule, 'cron 0 */2 * * * (America/Toronto)')
+  const cleared = await call('edit', { id: job.id, action: 'update', cron: '' })
+  assert.equal(cleared.schedule, null)
+  const listed = (await call('list', {})).jobs.find(j => j.id === job.id)
+  assert.deepEqual(listed.on, ['dsh.started', 'ci.*'])
+})
+
+test('the watch tool creates, lists and deletes stored watchers', async () => {
+  const { call, controller } = setup()
+  const made = await call('watch', { action: 'create', id: 'once-1', channel: 'ci.1', command: 'sleep 30', once: true })
+  assert.equal(made.id, 'once-1')
+  assert.equal(made.cwd, '/home/me/work')
+  assert.equal(made.once, true)
+  assert.equal((await call('watch', { action: 'create', id: 'once-1', channel: 'ci.1', command: 'x' })).code, 'invalid_watcher')
+  assert.equal((await call('watch', { action: 'create', id: 'bad id', channel: 'ci.1', command: 'x' })).code, 'invalid_watcher')
+  assert.deepEqual((await call('watch', { action: 'list' })).watchers.map(w => w.id), ['once-1'])
+  assert.equal((await call('watch', { action: 'list', id: 'x' })).code, 'invalid_arguments')
+  assert.deepEqual(await call('watch', { action: 'delete', id: 'once-1' }), { id: 'once-1', deleted: true })
+  assert.equal((await call('watch', { action: 'delete', id: 'once-1' })).code, 'not_found')
+  await controller.stop()
 })

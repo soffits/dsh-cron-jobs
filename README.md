@@ -10,7 +10,7 @@ DSH's built-in Schedule delivers a prompt to an agent session, so every tick sta
 
 A job's result can be **delivered**: the woken agent's final answer, or a command's output and failures, is handed to another plugin that sends it on, such as a chat bot. This plugin knows no channel itself; any plugin that provides a small `send` method can be one (see [Result delivery](#result-delivery)).
 
-Jobs run on cron expressions, RFC 5545 RRULE schedules, or once at a given time. They come from the plugin config, or an agent creates them from a conversation with the plugin's tools ("remind me here tomorrow at 9", "check this every Monday until January"). A **Cron tasks** page in the Web GUI shows every job and its recent runs, and lets you run a job now, pause it, or delete one an agent created.
+Jobs run on cron expressions, RFC 5545 RRULE schedules, or once at a given time, and they can also run on **events** instead of polling: any script, hook or CLI can emit one with `dsh-cron-event <channel>`, and the plugin can keep long-running **watchers** (a mailbox push stream, a notification feed) whose output lines are events (see [Events](#events)). Jobs come from the plugin config, or an agent creates them from a conversation with the plugin's tools ("remind me here tomorrow at 9", "check this every Monday until January"). A **Cron tasks** page in the Web GUI shows every job and its recent runs, and lets you run a job now, pause it, or delete one an agent created.
 
 ## Install
 
@@ -91,7 +91,8 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
 | Field | Meaning |
 |---|---|
 | `name` | Job name, used in logs and session titles. Must be unique. |
-| `cron` | Cron expression: 5 fields, or 6 with seconds first. Parsed by [croner](https://github.com/hexagon/croner), which handles daylight-saving changes like Vixie cron: a fixed time skipped by a spring forward runs at the first valid time after the gap, a fixed time repeated by a fall back runs once, and patterns with several hours, minutes or seconds run on both repeated occurrences. Set exactly one of `cron`, `rrule` and `at`. |
+| `cron` | Cron expression: 5 fields, or 6 with seconds first. Parsed by [croner](https://github.com/hexagon/croner), which handles daylight-saving changes like Vixie cron: a fixed time skipped by a spring forward runs at the first valid time after the gap, a fixed time repeated by a fall back runs once, and patterns with several hours, minutes or seconds run on both repeated occurrences. Set exactly one of `cron`, `rrule` and `at`, or none when the job has `on`. |
+| `on` | Event channel patterns that start a run, such as `[mail.sakina, alerts.*]`. See [Events](#events). |
 | `rrule` | RFC 5545 schedule: a `DTSTART` line and an `RRULE` line. The time zone comes from `DTSTART` (`TZID=...`, or `Z` for UTC). See [Schedules](#schedules). |
 | `at` | Run once at this time: ISO 8601 with an offset, or a local date-time read in `timeZone`. |
 | `timeZone` | IANA time zone for the cron expression or an `at` without offset. The Host's zone when empty. |
@@ -120,12 +121,15 @@ Next to `jobs`, the row also takes:
 | `deliver` | Default delivery target, `{ via, to }`, for jobs that do not set `deliver`. Unset: results are not delivered. |
 | `historyRecords` | Runs kept per job for the Cron tasks page. Default 50, at most 1000. |
 | `runLog` | Optional JSON Lines file of run starts and ends, see below. |
+| `watchers` | Long-running commands whose output lines are events: `[{ id, channel, command, cwd, enabled }]`. See [Watchers](#watchers). |
+| `events.coalesceSeconds` | Events for one job that arrive within this many seconds of the first start one run. Default 30. |
+| `events.maxRunsPerHour` | Most event-started runs of one job in any hour; past that, events wait and run together. Default 6; `0` means no cap. |
 
 ## How runs work
 
 - One run of a job at a time: if a tick arrives while the previous run is still going, the tick is skipped and logged.
 - Start, exit status, duration and a short tail of stdout and stderr go to the DSH log under `cron-jobs`. Sending the result anywhere else is what [Result delivery](#result-delivery) is for.
-- Set `runLog` (next to `jobs`) to a file path to also keep that record as JSON Lines: one `start` line per run, one `end` line with `status`, `outcome`, `exitCode`, `durationMs`, the output tails and the delivery state, a `delivery` line when a result waits for its channel (`waiting`), is left for the next start (`pending`), or has been delivered or not (`sent`, `silent`, `failed`), a `skipped` line for a skipped tick, an `overdue` line (with `dueAt` and `lateMs`) when a tick did not start on time and the watchdog ran it late, and `scheduler-start` / `scheduler-stop` lines (with `job: null`) when the scheduler starts or stops, so a gap in the log can be told apart from a lost tick. A `start` with no `end` means DSH stopped during the run. The file is only appended to; rotate it yourself if it grows.
+- Set `runLog` (next to `jobs`) to a file path to also keep that record as JSON Lines: one `start` line per run, one `end` line with `status`, `outcome`, `exitCode`, `durationMs`, the output tails and the delivery state, a `delivery` line when a result waits for its channel (`waiting`), is left for the next start (`pending`), or has been delivered or not (`sent`, `silent`, `failed`), a `skipped` line for a skipped tick, an `overdue` line (with `dueAt` and `lateMs`) when a tick did not start on time and the watchdog ran it late, and `scheduler-start` / `scheduler-stop` lines (with `job: null`) when the scheduler starts or stops, so a gap in the log can be told apart from a lost tick. Events add an `event` line per event (`channel`, `source`, the `matched` job ids, or `duplicate`), and watchers `watcher-start`, `watcher-exit` (exit code, run time, stderr tail), `watcher-down` and `watcher-up` lines. An event run's `start` line has `trigger: event` and the events' count and channels. A `start` with no `end` means DSH stopped during the run. The file is only appended to; rotate it yourself if it grows.
 - Ticks of config jobs missed while DSH is down are not caught up; the next tick runs normally. While DSH runs, a watchdog checks every minute that each job's next run is not more than a minute in the past; a tick whose timer was lost runs late instead of being missed. (Jobs created from a conversation catch up once, see below.)
 - Unloading the plugin (stopping DSH or changing its config) stops the timers and terminates running commands.
 
@@ -211,16 +215,79 @@ and point a job at it with `deliver: { via: myChannel, to: <address> }`.
 
 When an RRULE or one-time schedule has no more runs, the job's state becomes **ended**. It stays listed until it is deleted (or, for config jobs, removed from the config).
 
+## Events
+
+A job can run when something happens instead of checking on a timer. Give it `on`, a list of channel patterns, with or without a schedule:
+
+```yaml
+- name: Mailbox
+  on: [mail.me]
+  cron: '0 */2 * * *'      # slow safety net in case an event is missed
+  command: ./mail-gate.sh
+  agent:
+    prompt: Handle the new mail.
+```
+
+**Channels** are dot-separated names of letters, digits, `_`, `:` and `-`, such as `mail.me`, `ci.run.123` or `dsh.started`. In a pattern, `*` matches any characters, dots included, so `alerts.*` matches `alerts.disk` and `alerts.komodo.down`.
+
+**Emitting an event.** The package installs a small CLI:
+
+```sh
+dsh-cron-event ci.run.123 --data '{"conclusion": "success"}'
+gh run watch 123 --exit-status; dsh-cron-event ci.run.123 --data "{\"exit\": $?}"
+echo '{"subject": "hi"}' | dsh-cron-event mail.me --data -
+```
+
+It writes one file into the plugin's inbox, `$DSH_HOME/cron-jobs/events/` (mode 700), and waits up to ten seconds for DSH to take it, printing the ids of the jobs it matched. No port, token or network path into DSH is needed, and an event written while DSH is down waits there and is taken at the next start. `--id <key>` drops a second event with the same channel and key within an hour; `--no-wait` returns at once; `--text` sends plain text instead of JSON. Exit code 3 means DSH did not take it in time (it stays queued). The CLI is in the profile's `node_modules/.bin`; link it somewhere on `PATH` to call it by name.
+
+**What a run sees.** Events for one job that arrive within `events.coalesceSeconds` (30 s) of the first one are gathered, and the job runs once with all of them:
+
+- The command gets them on stdin as one JSON document, `{"trigger": "event", "events": [{"channel", "at", "data" or "text", "key", "source"}], "dropped": 0}`, and every command gets `DSH_CRON_TRIGGER` (`schedule`, `manual` or `event`) and `DSH_CRON_JOB` in its environment. A gate still decides whether to wake the agent.
+- The agent prompt gets the events appended, one JSON line each, in a block marked as untrusted data from outside DSH. An event is a hint: the job should read the truth from its source (the mailbox, the CI run), so a forged or garbled event costs one wasted run, and a message's subject never reaches the agent as an instruction.
+
+If the job is still running when its batch is ready, it runs once more as soon as the current run ends, with every event gathered meanwhile. A scheduled tick that finds the job running is still skipped as before. At most `events.maxRunsPerHour` (6) event runs of one job start in any hour; past that, events wait and run together when the oldest of those runs is an hour old, so a stuck feed cannot start hundreds of runs. A paused, ended or disabled job ignores events. The run history and the Cron tasks page show event runs with their channels.
+
+**`once`** (tools only) ends a job after its first run that was not started by hand. With `on: [dsh.started]` it waits for the next DSH start.
+
+**Built-in event.** `dsh.started` is emitted once per DSH process, when the scheduler first starts (not on a plugin reload). A one-off "check DSH after the restart" job becomes `on: [dsh.started], once: true`, instead of a guessed time.
+
+**Delivery and safety.** An inbox file is kept (as `.processing`) until every run it started has begun, so a restart in between reads it again. Events from watchers are not kept; each watcher catches up from its own cursor when it starts (below). Either way the job's slower schedule is the safety net for anything missed.
+
+### Watchers
+
+A watcher is a long-running command the plugin starts with the scheduler, restarts when it exits, and stops on unload. Each stdout line is an event on the watcher's channel:
+
+- a JSON object line is the event's data, and its string `id` field, if any, is the dedupe key;
+- any other non-empty line is the event's text;
+- `{"wakeAgent": false}` lines are ignored.
+
+A watcher that exits is restarted after 1 s, doubling up to 5 minutes, and back to 1 s once a run lasted a minute. If it has not managed to stay up for a minute in 15 minutes, one note goes to the row's `deliver` target, and one more when it works again; exits, stderr tails and these notes are in the run log. The command runs with `bash -c` in its own process group, with `DSH_CRON_WATCHER` (its id), `DSH_CRON_CHANNEL` and `DSH_CRON_STATE_DIR` (`$DSH_HOME/cron-jobs/watchers/<id>`, a directory for its cursor) in its environment.
+
+Watchers come from the row's `watchers` list, or from a conversation with the `cron_job_watch` tool (`create`, `delete`, `list`), which keeps them in DSH storage. A tool-made watcher can be `once`: it runs one time and removes itself when it exits, for a one-off wait that has to survive a DSH restart:
+
+```
+cron_job_watch create id=ci-123 channel=ci.123 once=true
+  command='gh run watch 123 --exit-status >/dev/null; echo "{\"exit\": $?}"'
+cron_job_create title="Report CI 123" target=this_session on=["ci.123"] once=true prompt="CI run 123 finished; check it and tell me."
+```
+
+A good watcher keeps a cursor (a JMAP state string, an IMAP UIDNEXT, a feed's last message id) in `DSH_CRON_STATE_DIR`, prints one line at startup when something changed while it was down, and exits on any error or a connection that went silent, leaving the restart to the plugin. Some sources that fit:
+
+- **JMAP mail** (RFC 8620 EventSource, served by Stalwart, Fastmail and others): stream `eventSourceUrl` with `types=EmailDelivery` and print a line per `state` push.
+- **IMAP IDLE**: [goimapnotify](https://gitlab.com/shackra/goimapnotify) with `onNewMail: echo new`.
+- **ntfy**: `curl -sN 'https://ntfy.sh/<topic>,<topic>/json?since=<last id>'`, printing the `message` events.
+
 ## Jobs created from a conversation
 
-The `cron-jobs-tools` row registers four tools. Their names start with `cron_job` by default; the row's `prefix` setting changes that (`prefix: schedule` gives `schedule_create` and so on, the names of DSH's built-in Schedule tools, for use in its place).
+The `cron-jobs-tools` row registers five tools. Their names start with `cron_job` by default; the row's `prefix` setting changes that (`prefix: schedule` gives `schedule_create` and so on, the names of DSH's built-in Schedule tools, for use in its place).
 
 | Tool | What it does |
 |---|---|
-| `cron_job_create` | Create a job: a title, a prompt and/or a command, exactly one of `cron`, `rrule` and `at` (with `timeZone` where needed), where the prompt goes, and optionally where the result is delivered and which model its sessions use. |
-| `cron_job_edit` | `update` the given fields, `pause`, `resume` (continues from now), or `delete` a job by id. |
+| `cron_job_create` | Create a job: a title, a prompt and/or a command, one of `cron`, `rrule` and `at` (with `timeZone` where needed) and/or `on` (event channels), where the prompt goes, and optionally `once`, where the result is delivered and which model its sessions use. |
+| `cron_job_edit` | `update` the given fields, `pause`, `resume` (continues from now), or `delete` a job by id. An empty `cron`, `rrule` or `at` removes the schedule of a job with `on`; an empty `on` removes its subscriptions. |
 | `cron_job_list` | Every job, from the config and from tools, with its id, state, schedule, next run, target and last run. |
 | `cron_job_view` | One job's full definition and its five latest runs. |
+| `cron_job_watch` | `create`, `delete` or `list` [watchers](#watchers). |
 
 A new job takes the calling session's working directory and agent preset, so a job created from a session in `/home/me/project` runs its command there and opens its sessions there. `cwd` sets another directory.
 
@@ -247,7 +314,7 @@ A delegated subagent can use the tools, but its own session cannot be a target, 
 The Web GUI gets a **Cron tasks** entry in the sidebar, laid out like DSH's own Automation tasks page:
 
 - The list shows every job with its state (active, paused, off in config, invalid, or ended), its schedule and time zone, the next run, and the result of the last run. Jobs an agent created are marked "Created by an agent". Filter by state or search by name, command or prompt. The page refreshes every few seconds while it is visible.
-- Selecting a job opens its detail. **Settings** shows the job read-only (schedule, what it does, command, directory, time limit, where the prompt goes, where the result is delivered, and for jobs with a prompt the agent preset, session directory and where it came from, auto-archive, session reuse and prompt; for jobs an agent created, when and from which session). **Runs** lists the saved runs, newest first: start time, what started it (schedule or Run now), duration, exit code or other outcome, the woken session with a link that opens it, whether the session was reused, its archive state, the delivery result, and the tails of stdout and stderr.
+- Selecting a job opens its detail. **Settings** shows the job read-only (schedule, what it does, command, directory, time limit, where the prompt goes, where the result is delivered, and for jobs with a prompt the agent preset, session directory and where it came from, auto-archive, session reuse and prompt; for jobs an agent created, when and from which session). **Runs** lists the saved runs, newest first: start time, what started it (schedule, Run now, or events with their channels), duration, exit code or other outcome, the woken session with a link that opens it, whether the session was reused, its archive state, the delivery result, and the tails of stdout and stderr.
 - The pause button pauses or resumes the job's schedule. **Run now** in the `⋯` menu starts one run immediately; it is refused while the job is already running, and it does not move the schedule. **Delete** in the same menu removes a job an agent created, with its run history. A job with a prompt has a footer link to its latest session.
 
 The page does not create or edit jobs: config jobs are edited in the config, the others through the tools.

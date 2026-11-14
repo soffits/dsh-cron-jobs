@@ -4,6 +4,9 @@
   "description": "Scheduled jobs for DeepSeek Harness: shell commands and agent prompts on cron, RRULE or one-time schedules, a gate that wakes an agent only when there is something to do, result delivery through any plugin that can send messages, tools to manage jobs from a conversation, and a Cron tasks page in the Web GUI.",
   "type": "module",
   "main": "./index.js",
+  "bin": {
+    "dsh-cron-event": "./bin/dsh-cron-event.js"
+  },
   "exports": {
     ".": "./index.js",
     "./tools": "./tools.js",
@@ -13,6 +16,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "bin",
     "index.js",
     "tools.js",
     "client.js",
@@ -43,8 +47,8 @@
     "dsh": ">=0.2.2-rc.1 <0.3.0-0"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\"",
-    "check": "for f in index.js tools.js client.js src/*.js test/*.js; do node --check \"$f\" || exit 1; done"
+    "test": "node --import ./test/home.js --test \"test/*.test.js\"",
+    "check": "for f in index.js tools.js client.js bin/*.js src/*.js test/*.js; do node --check \"$f\" || exit 1; done"
   },
   "dependencies": {
     "@deepseek-ai/dsh-util-time": "0.2.2-rc.1",

@@ -8,6 +8,9 @@
  * reads and controls jobs over authenticated routes on DSH's /api channel.
  * Results are delivered through whichever service a job's delivery target
  * names, looked up with `ctx.get()` when a result is ready (src/deliver.js).
+ * Events from the inbox directory (src/spool.js, bin/dsh-cron-event.js) and
+ * from supervised watchers (src/watchers.js) start the jobs subscribed to
+ * their channel (src/events.js).
  */
 import { Config } from './src/config.js'
 import { runCommand } from './src/command.js'
@@ -18,6 +21,11 @@ import { createAnswerChecks } from './src/answer-check.js'
 import { createRunLog } from './src/runlog.js'
 import { openHistory } from './src/history.js'
 import { createRoutes, createRpcHandler } from './src/rpc.js'
+import { createEventSpool } from './src/spool.js'
+import { defaultEventDir, defaultWatcherStateRoot } from './src/events.js'
+
+/** Set once per DSH process, so `dsh.started` means a DSH start, not a plugin reload. */
+const STARTED = Symbol.for('@soffits/dsh-cron-jobs/started')
 
 export const name = 'dsh-cron-jobs'
 export const inject = ['storageDomain']
@@ -25,7 +33,7 @@ export { Config }
 
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ jobs: import('./src/job.js').Job[], runLog?: string, historyRecords?: number, defaultAgentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: { via?: string, to?: string } }} config
+ * @param {{ jobs: import('./src/job.js').Job[], watchers?: object[], events?: { coalesceSeconds?: number, maxRunsPerHour?: number }, runLog?: string, historyRecords?: number, defaultAgentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: { via?: string, to?: string } }} config
  */
 export function apply(ctx, config) {
   const logger = ctx.logger('cron-jobs')
@@ -41,6 +49,7 @@ export function apply(ctx, config) {
     let jobs
     let history
     let checks
+    let spool
     // A job's answerCheck runs as the turn its prompt started is about to close.
     const stopTurnHook = ctx.on?.('agent/turn-stopping', payload => checks?.onTurnStopping(payload))
     const ready = (async () => {
@@ -71,16 +80,34 @@ export function apply(ctx, config) {
         signal: controller.signal,
         record,
         history,
+        events: config.events,
+        watchers: config.watchers ?? [],
+        watcherOptions: { stateRoot: defaultWatcherStateRoot() },
       }).start()
       current = jobs
+      // Once per process: jobs waiting for a DSH restart run now.
+      if (!globalThis[STARTED]) {
+        globalThis[STARTED] = true
+        jobs.emit({ channel: 'dsh.started', source: 'dsh', data: { processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString() } })
+      }
+      if (controller.signal.aborted) return
+      spool = createEventSpool({
+        dir: defaultEventDir(),
+        handle: (input, ack) => jobs.emit(input, ack),
+        onError: error => logger.warn('event inbox: %s', error instanceof Error ? error.message : String(error)),
+      })
+      await spool.start()
     })().catch(error => logger.error('cron jobs not started: %s', error instanceof Error ? error.message : String(error)))
     return async () => {
       current = undefined
       stopTurnHook?.()
+      // Stop reading events first, so none reaches a stopping scheduler.
+      await spool?.stop()
       // Stop the timers first so no new run starts with an aborted signal.
       const stopping = jobs?.stop()
       controller.abort()
       await ready
+      await spool?.stop()
       // Let ended runs save their outcome before the storage closes.
       await (stopping ?? jobs?.stop())
       await history?.close()

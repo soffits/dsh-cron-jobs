@@ -34,7 +34,12 @@ export const storedJobSchema = z.object({
   command: z.string().optional(),
   // Command that checks the agent's final answer before its turn closes (answer-check.js).
   answerCheck: z.string().optional(),
-  schedule: scheduleSchema,
+  // Omitted for a job that runs only on events.
+  schedule: scheduleSchema.optional(),
+  // Channel patterns whose events start a run (events.js).
+  on: z.array(z.string().min(1)).optional(),
+  // End the job after its first run that was not started by hand.
+  once: z.boolean().optional(),
   // Directory of the command and of new sessions.
   cwd: z.string().optional(),
   preset: z.string().optional(),
@@ -53,6 +58,17 @@ export const storedJobSchema = z.object({
 })
 
 /** @typedef {z.infer<typeof storedJobSchema>} StoredJob */
+
+/** Watchers created with the tools (watchers.js); `watchers` table. */
+export const storedWatcherSchema = z.object({
+  id: z.string().min(1),
+  channel: z.string().min(1),
+  command: z.string().min(1),
+  cwd: z.string().optional(),
+  once: z.boolean().optional(),
+  createdAt: z.string(),
+  createdBy: z.string().optional(),
+})
 
 /** Stored jobs, read synchronously; writes are durable before they resolve. */
 export class JobStore {

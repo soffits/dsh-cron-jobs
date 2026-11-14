@@ -61,6 +61,7 @@ window.__ModuleLoader__.load({
       'detail.close': 'Close',
       'detail.nextRun': 'Next run ',
       'detail.noNextRun': 'No upcoming run',
+      'detail.onEvents': 'Runs when an event arrives on {channels}',
       'detail.pause': 'Pause schedule',
       'detail.resume': 'Resume schedule',
       'detail.pauseUnavailable': 'Turned off in the plugin config',
@@ -80,6 +81,12 @@ window.__ModuleLoader__.load({
       'notice.running': 'Running since {time} ({trigger}).',
       'notice.memory': 'Run history is kept in memory only because DSH storage is unavailable; it is lost on restart.',
       'field.schedule': 'Schedule',
+      'field.scheduleNone': 'None: runs on events only',
+      'field.on': 'Runs on events',
+      'field.once': 'Runs once',
+      'field.onceValue': 'Ends after its first run that was not started by hand',
+      'field.pendingEvents': 'Waiting events',
+      'field.pendingEventsValue': '{count}, run at {time}',
       'field.timeZone': 'Time zone',
       'field.timeZoneHost': 'Host time zone',
       'field.command': 'Command',
@@ -137,6 +144,8 @@ window.__ModuleLoader__.load({
       'runs.loadError': 'Could not load runs.',
       'trigger.schedule': 'Scheduled',
       'trigger.manual': 'Run now',
+      'trigger.event': 'Event',
+      'run.events': '{count} event(s): {channels}',
       'run.exit': 'Exit code {code}',
       'run.duration': '{duration}',
       'run.openSession': 'Open woken session',
@@ -192,6 +201,7 @@ window.__ModuleLoader__.load({
       'detail.close': '关闭',
       'detail.nextRun': '下次运行 ',
       'detail.noNextRun': '没有待运行的计划',
+      'detail.onEvents': '在 {channels} 有事件时运行',
       'detail.pause': '暂停计划',
       'detail.resume': '恢复计划',
       'detail.pauseUnavailable': '已在插件配置中关闭',
@@ -211,6 +221,12 @@ window.__ModuleLoader__.load({
       'notice.running': '自 {time} 起运行中（{trigger}）。',
       'notice.memory': 'DSH 存储不可用，运行记录只保存在内存中，重启后会丢失。',
       'field.schedule': '计划',
+      'field.scheduleNone': '无：只在事件到来时运行',
+      'field.on': '事件触发',
+      'field.once': '只运行一次',
+      'field.onceValue': '第一次非手动运行后结束',
+      'field.pendingEvents': '等待中的事件',
+      'field.pendingEventsValue': '{count} 个，{time} 运行',
       'field.timeZone': '时区',
       'field.timeZoneHost': '主机时区',
       'field.command': '命令',
@@ -268,6 +284,8 @@ window.__ModuleLoader__.load({
       'runs.loadError': '无法加载运行记录。',
       'trigger.schedule': '按计划',
       'trigger.manual': '立即运行',
+      'trigger.event': '事件',
+      'run.events': '{count} 个事件：{channels}',
       'run.exit': '退出码 {code}',
       'run.duration': '{duration}',
       'run.openSession': '打开唤醒的会话',
@@ -471,8 +489,11 @@ window.__ModuleLoader__.load({
     const OFF = new Set(['disabled', 'invalid', 'ended'])
 
     function scheduleText(job) {
-      if (job.schedule?.kind === 'cron' || (!job.schedule && job.cron)) return job.timeZone ? `${job.cron} (${job.timeZone})` : job.cron
-      return job.schedule?.text ?? ''
+      let text = ''
+      if (job.schedule?.kind === 'cron' || (!job.schedule && job.cron)) text = job.timeZone ? `${job.cron} (${job.timeZone})` : job.cron
+      else text = job.schedule?.text ?? ''
+      const on = job.on?.length ? `on ${job.on.join(', ')}` : ''
+      return [text, on].filter(Boolean).join(' · ')
     }
 
     function deliverText(target) {
@@ -576,8 +597,13 @@ window.__ModuleLoader__.load({
       const rows = [
         job.source === 'tool' && h(RuleRow, { key: 'source', label: t('field.source') }, t('field.sourceTool', { time: formatAbsolute(job.createdAt, t('time.locale')) })),
         job.createdBy && h(RuleRow, { key: 'createdBy', label: t('field.createdBy') }, h('button', { type: 'button', className: 'dcj-linkButton dcj-code', onClick: () => onOpenSession(job.createdBy) }, job.createdBy)),
-        h(RuleRow, { key: 'schedule', label: t('field.schedule'), stack: job.schedule?.kind === 'rrule' }, h('span', { className: 'dcj-code' }, job.schedule?.kind === 'rrule' ? job.schedule.rrule : (job.schedule?.kind === 'at' ? job.schedule.at : job.cron))),
-        h(RuleRow, { key: 'zone', label: t('field.timeZone') }, job.timeZone || t('field.timeZoneHost')),
+        h(RuleRow, { key: 'schedule', label: t('field.schedule'), stack: job.schedule?.kind === 'rrule' }, job.schedule || job.cron
+          ? h('span', { className: 'dcj-code' }, job.schedule?.kind === 'rrule' ? job.schedule.rrule : (job.schedule?.kind === 'at' ? job.schedule.at : job.cron))
+          : t('field.scheduleNone')),
+        (job.schedule || job.cron) && h(RuleRow, { key: 'zone', label: t('field.timeZone') }, job.timeZone || t('field.timeZoneHost')),
+        job.on?.length > 0 && h(RuleRow, { key: 'on', label: t('field.on') }, h('span', { className: 'dcj-code' }, job.on.join(', '))),
+        job.once && h(RuleRow, { key: 'once', label: t('field.once') }, t('field.onceValue')),
+        job.pendingEvents && h(RuleRow, { key: 'pending', label: t('field.pendingEvents') }, t('field.pendingEventsValue', { count: job.pendingEvents.count, time: formatAbsolute(job.pendingEvents.dueAt, t('time.locale')) })),
         h(RuleRow, { key: 'kind', label: t('field.kind') }, t(kindLabel)),
         job.command && h(RuleRow, { key: 'command', label: t('field.command'), stack: true }, h('pre', { className: 'dcj-pre' }, job.command)),
         job.command && h(RuleRow, { key: 'cwd', label: t('field.cwd') }, job.cwd ? h('span', { className: 'dcj-code' }, job.cwd) : t('field.cwdHost')),
@@ -614,6 +640,7 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = useState(false)
       const bad = BAD.has(run.status)
       const meta = [t(`trigger.${run.trigger}`)]
+      if (run.events) meta.push(t('run.events', { count: run.events.count, channels: run.events.channels.join(', ') }))
       if (typeof run.durationMs === 'number') meta.push(formatDuration(run.durationMs, locale))
       if (typeof run.exitCode === 'number') meta.push(t('run.exit', { code: run.exitCode }))
       if (run.outcome && !/^exit \d+$/.test(run.outcome)) meta.push(run.outcome)
@@ -768,7 +795,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dcj-detailHeader' }, h('h2', { className: 'dcj-readonlyName' }, name)),
         h('div', { className: 'dcj-nextRun' }, job.nextRunAt
           ? h('p', null, t('detail.nextRun'), h('time', { dateTime: job.nextRunAt }, formatAbsolute(job.nextRunAt, locale)), ' ', formatRelative(job.nextRunAt, locale, now))
-          : h('p', null, t('detail.noNextRun'))),
+          : h('p', null, job.on?.length > 0 && job.state === 'active' ? t('detail.onEvents', { channels: job.on.join(', ') }) : t('detail.noNextRun'))),
         notices.map((text, i) => h('p', { key: i, className: 'dcj-detailNotice' }, text)),
         notice && h('p', { className: 'dcj-detailNotice', role: 'status' }, notice),
         failure && h('p', { className: 'dcj-failure', role: 'alert' }, failure),
