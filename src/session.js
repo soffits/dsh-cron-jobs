@@ -167,9 +167,11 @@ export const ARCHIVE_ATTEMPTS = 60
  */
 export async function archiveWhenIdle(ctx, sessionId, {
   signal, isLatest = () => true, lock = fn => fn(), retryMs = ARCHIVE_RETRY_MS, attempts = ARCHIVE_ATTEMPTS,
+  serviceWaitMs = SERVICE_WAIT_MS,
 } = {}) {
-  const controller = ctx.get('sessionController')
-  const registry = ctx.get('workspaceRegistry')
+  const controller = await hostService(ctx, 'sessionController', { signal, waitMs: serviceWaitMs })
+  const registry = await hostService(ctx, 'workspaceRegistry', { signal, waitMs: serviceWaitMs })
+  if (signal?.aborted) return { archive: 'pending' }
   if (controller === undefined || registry === undefined) {
     return { archive: 'kept', note: 'this host has no workspace archive' }
   }
@@ -220,8 +222,11 @@ export const ANSWER_ATTEMPTS = 120
  * @param {number} [options.attempts]
  * @returns {Promise<{ pending: true } | { text: string, reason?: string } | { error: string }>}
  */
-export async function waitForAnswer(ctx, sessionId, messageId, { signal, retryMs = ANSWER_RETRY_MS, attempts = ANSWER_ATTEMPTS }) {
-  const controller = ctx.get('sessionController')
+export async function waitForAnswer(ctx, sessionId, messageId, {
+  signal, retryMs = ANSWER_RETRY_MS, attempts = ANSWER_ATTEMPTS, serviceWaitMs = SERVICE_WAIT_MS,
+}) {
+  const controller = await hostService(ctx, 'sessionController', { signal, waitMs: serviceWaitMs })
+  if (signal?.aborted) return { pending: true }
   if (controller === undefined) return { error: 'this host cannot read sessions (no sessionController service)' }
   for (let attempt = 1; ; attempt++) {
     const resolved = await controller.resolveAgent(sessionId)
@@ -234,6 +239,27 @@ export async function waitForAnswer(ctx, sessionId, messageId, { signal, retryMs
     if (attempt >= attempts) return { error: 'the prompt never reached a finished turn' }
     await sleep(retryMs, signal)
     if (signal?.aborted) return { pending: true }
+  }
+}
+
+/** How long a resumed delivery or archive waits for a Host service to appear. */
+export const SERVICE_WAIT_MS = 120_000
+const SERVICE_POLL_MS = 500
+
+/**
+ * Read a Host service, waiting up to `waitMs` for it to be provided. At DSH
+ * startup this plugin can start (and resume runs an earlier copy left
+ * pending) before the session services are registered; reading them once
+ * then failed a pending delivery for good (2026-11-13, "no sessionController
+ * service" right after a restart). Resolves undefined when the service never
+ * appears or the signal aborts.
+ */
+export async function hostService(ctx, name, { signal, waitMs = SERVICE_WAIT_MS, pollMs = SERVICE_POLL_MS } = {}) {
+  const deadline = Date.now() + waitMs
+  for (;;) {
+    const service = ctx.get(name)
+    if (service !== undefined || signal?.aborted || Date.now() >= deadline) return service
+    await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())), signal)
   }
 }
 

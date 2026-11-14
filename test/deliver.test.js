@@ -273,6 +273,16 @@ test('waitForAnswer waits for the turn the prompt started, across idles', async 
   assert.deepEqual(await waitForAnswer(ctx, 'session-1', 'never', { signal: aborted }), { pending: true })
 })
 
+test('waitForAnswer waits for a sessionController that registers late, and gives up after the wait', async () => {
+  const log = [...turn('m1', ['Done'], 'completed')]
+  const agent = { session: { log }, whenIdle: async () => {} }
+  let ready = false
+  setTimeout(() => { ready = true }, 30)
+  const late = { get: name => (ready && name === 'sessionController' ? { resolveAgent: async () => ({ agent }) } : undefined) }
+  assert.deepEqual(await waitForAnswer(late, 'session-1', 'm1', { retryMs: 0, serviceWaitMs: 2000 }), { text: 'Done', reason: 'completed' })
+  assert.deepEqual(await waitForAnswer({ get: () => undefined }, 'session-1', 'm1', { serviceWaitMs: 0 }), { error: 'this host cannot read sessions (no sessionController service)' })
+})
+
 test('the agent prompt says where its answer goes only when it is delivered', () => {
   const base = { jobName: 'J', prompt: 'p', firedAt: '2026-11-08 07:00' }
   assert.doesNotMatch(buildAgentPrompt(base), /delivered/)

@@ -200,5 +200,13 @@ test('archiveWhenIdle: superseded, unloaded, gone, and no registry', async () =>
   assert.deepEqual(await archiveWhenIdle(existingHost().ctx, 'session-old', { signal: controller.signal }), { archive: 'pending' })
   const gone = await archiveWhenIdle(existingHost({ resolveError: new Error('nope') }).ctx, 'session-old')
   assert.equal(gone.archive, 'kept')
-  assert.equal((await archiveWhenIdle({ get: () => undefined }, 's')).archive, 'kept')
+  assert.equal((await archiveWhenIdle({ get: () => undefined }, 's', { serviceWaitMs: 0 })).archive, 'kept')
+})
+
+test('archiveWhenIdle waits for services that register after the plugin starts', async () => {
+  const host = existingHost()
+  let ready = false
+  setTimeout(() => { ready = true }, 30)
+  const ctx = { get: name => (ready ? host.ctx.get(name) : undefined) }
+  assert.deepEqual(await archiveWhenIdle(ctx, 'session-old', { serviceWaitMs: 2000 }), { archive: 'archived' })
 })
