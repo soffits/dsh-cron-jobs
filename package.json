@@ -1,6 +1,6 @@
 {
   "name": "@soffits/dsh-cron-jobs",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Scheduled jobs for DeepSeek Harness: shell commands and agent prompts on cron, RRULE or one-time schedules, a gate that wakes an agent only when there is something to do, result delivery through any plugin that can send messages, tools to manage jobs from a conversation, and a Cron tasks page in the Web GUI.",
   "type": "module",
   "main": "./index.js",
