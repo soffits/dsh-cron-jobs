@@ -167,6 +167,12 @@ Where results go is decided per job: its own `deliver` (or `false`), otherwise n
 
 Each run's delivery shows on the Cron tasks page and in the run log: not sent yet (waiting for the answer or for the channel), sent, nothing to send, or not sent with the reason. A delivery still waiting when DSH stops or the plugin reloads, whether for a turn that is still running or for a channel that is not there, is picked up and delivered after the next start.
 
+### Runs cut off by a restart
+
+A woken turn that DSH itself stops before it finishes (a restart, or a reload that disposes the session's agent) is run again once. A turn a person stopped, or one that failed, is not. The cut-off turn delivers nothing; 30 seconds after DSH is back (or after the plugin notices, if it was running all along), the plugin sends a short follow-up into the same session saying the earlier turn was cut off and asking the agent to finish the job without repeating what is done. The session already holds the job's prompt, command output and events, and whatever the cut-off turn did. The rerun's answer is delivered like any other.
+
+The rerun is skipped, with the reason in the run history and a `rerun-skipped` run-log line, when the cut-off run started more than 2 hours ago, a later run of the job has woken the agent since, the job's next run is less than 15 minutes away, or the job is paused, disabled or deleted. A session the job opened for itself that a person has since taken over is left alone: the rerun fails with a note to the delivery target. A rerun that is cut off too is not run again. The run log marks the cut-off with a `cut-off` line, and the rerun's `start` line carries `rerunOf`.
+
 ### Answer checks
 
 A job can name a command, `agent.answerCheck` (or `answerCheck` in the tools), that looks at the agent's final answer while the turn can still change it. When the turn that the job's prompt started is about to close, the command runs with the answer on stdin, in the session's working directory, with a 60-second limit. Empty stdout passes the answer. Anything it prints goes back into the same turn as a message asking for a rewrite, and the agent's next answer is the one delivered. Each run is steered at most once, so a check that never passes cannot keep a turn going. Empty answers, `[SILENT]` and answers with only `MEDIA:` lines are not checked. A command that fails or times out lets the answer through.

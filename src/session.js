@@ -220,7 +220,7 @@ export const ANSWER_ATTEMPTS = 120
  * @param {AbortSignal} [options.signal] - Plugin unload: resolves `{ pending: true }`.
  * @param {number} [options.retryMs]
  * @param {number} [options.attempts]
- * @returns {Promise<{ pending: true } | { text: string, reason?: string } | { error: string }>}
+ * @returns {Promise<{ pending: true } | { text: string, reason?: string, cause?: string } | { error: string }>}
  */
 export async function waitForAnswer(ctx, sessionId, messageId, {
   signal, retryMs = ANSWER_RETRY_MS, attempts = ANSWER_ATTEMPTS, serviceWaitMs = SERVICE_WAIT_MS,
@@ -235,7 +235,7 @@ export async function waitForAnswer(ctx, sessionId, messageId, {
     await agent.whenIdle().catch(() => {})
     if (signal?.aborted) return { pending: true }
     const answer = finalAnswer(agent.session?.log ?? [], messageId)
-    if (answer.done) return { text: answer.text ?? '', reason: answer.reason }
+    if (answer.done) return { text: answer.text ?? '', reason: answer.reason, ...(answer.cause ? { cause: answer.cause } : {}) }
     if (attempt >= attempts) return { error: 'the prompt never reached a finished turn' }
     await sleep(retryMs, signal)
     if (signal?.aborted) return { pending: true }

@@ -134,10 +134,11 @@ export function failureLine(job, result) {
  * (Claude Code through dsh-oh-my-claude) put every text block of their own
  * inner tool loop into one assistant message, so narration would otherwise
  * be glued in front of a final `[SILENT]`. `done` is false while the turn is
- * still open, or the message has not entered a turn yet.
+ * still open, or the message has not entered a turn yet. `cause` says why an
+ * aborted turn stopped (`user`, `parent`, `disposed`, `hook`).
  * @param {Array<{ type: string, data?: any }>} log - The session's event log.
  * @param {string} messageId - Id of the prompt the job sent.
- * @returns {{ done: boolean, text?: string, reason?: string }}
+ * @returns {{ done: boolean, text?: string, reason?: string, cause?: string }}
  */
 export function finalAnswer(log, messageId) {
   const start = log.findIndex(event => event.type === 'user/message' && event.data?.id === messageId)
@@ -154,10 +155,21 @@ export function finalAnswer(log, messageId) {
       // dsh-fallback-models stops a turn whose model failed and continues the
       // work in the next turn on a fallback model; the answer is there.
       if (continuedElsewhere(event.data?.reason)) continue
-      return { done: true, text, reason: event.data?.reason?.kind }
+      const cause = event.data?.reason?.reason?.kind
+      return { done: true, text, reason: event.data?.reason?.kind, ...(typeof cause === 'string' ? { cause } : {}) }
     }
   }
   return { done: false }
+}
+
+/**
+ * Whether a turn was cut off from outside rather than finished: DSH disposed
+ * its agent (a restart, or a profile reload that replaced the agent) before
+ * the turn ended. A turn a person stopped, or one that failed, is not.
+ * @param {{ reason?: string, cause?: string }} answer
+ */
+export function cutOff(answer) {
+  return answer.reason === 'aborted' && answer.cause === 'disposed'
 }
 
 /** Prefix of the stop reason dsh-fallback-models records on a turn it continues. */

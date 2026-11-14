@@ -21,11 +21,7 @@ export const MAX_PROMPT_OUTPUT_BYTES = 64 * 1024
  */
 export function buildAgentPrompt({ jobName, jobId, prompt, stdout, droppedBytes = 0, firedAt, delivery, events }) {
   const when = `run at ${firedAt}${events === undefined ? '' : ', started by the events below'}`
-  const header = (jobId === undefined
-    ? `This is a scheduled message from the user, sent by the cron job "${jobName}" (${when}).`
-    : `This is a scheduled message from the user, sent by the scheduled job "${jobName}" (id ${jobId}, ${when}).`)
-    + (delivery === undefined ? '' : ` Your final answer is delivered ${delivery.to ? `to ${delivery.to} ` : ''}through ${delivery.via}; MEDIA:<path> lines in it are attached as files, and an answer of exactly [SILENT] sends nothing.`)
-  const parts = [header, '', prompt.trim()]
+  const parts = [header({ jobName, jobId, when }) + deliveryNote(delivery), '', prompt.trim()]
   if (events !== undefined) parts.push('', ...eventBlock(events))
   if (stdout === undefined) return parts.join('\n')
   const { text, cut } = tailBytes(stdout.replace(/\s+$/, ''), MAX_PROMPT_OUTPUT_BYTES)
@@ -38,6 +34,37 @@ export function buildAgentPrompt({ jobName, jobId, prompt, stdout, droppedBytes 
     text,
     '--- End of command output ---',
   ].join('\n')
+}
+
+/**
+ * Build the message that reruns a cut-off run in its own session: the job's
+ * prompt is already above it, together with whatever the cut-off turn did,
+ * so the agent is asked to finish the work rather than start over.
+ *
+ * @param {object} input
+ * @param {string} input.jobName
+ * @param {string} [input.jobId]
+ * @param {string} input.firedAt - Local time of the cut-off run.
+ * @param {{ via: string, to: string }} [input.delivery]
+ * @returns {string}
+ */
+export function buildRerunPrompt({ jobName, jobId, firedAt, delivery }) {
+  return [
+    header({ jobName, jobId, when: `rerun of the run at ${firedAt}` }) + deliveryNote(delivery),
+    '',
+    `Your turn on this job's message of ${firedAt} (above) was cut off before it finished, because DSH restarted or reloaded. Check what that turn already did, then finish the job without repeating what is done.`,
+  ].join('\n')
+}
+
+function header({ jobName, jobId, when }) {
+  return jobId === undefined
+    ? `This is a scheduled message from the user, sent by the cron job "${jobName}" (${when}).`
+    : `This is a scheduled message from the user, sent by the scheduled job "${jobName}" (id ${jobId}, ${when}).`
+}
+
+function deliveryNote(delivery) {
+  if (delivery === undefined) return ''
+  return ` Your final answer is delivered ${delivery.to ? `to ${delivery.to} ` : ''}through ${delivery.via}; MEDIA:<path> lines in it are attached as files, and an answer of exactly [SILENT] sends nothing.`
 }
 
 /**

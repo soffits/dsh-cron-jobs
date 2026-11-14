@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { decideWake } from './wake.js'
-import { commandResultText, describeTarget, messageFromText, resolveDelivery } from './deliver.js'
-import { buildAgentPrompt, formatLocalTime, sessionTitle } from './prompt.js'
+import { commandResultText, cutOff, describeTarget, messageFromText, resolveDelivery } from './deliver.js'
+import { buildAgentPrompt, buildRerunPrompt, formatLocalTime, sessionTitle } from './prompt.js'
 import { HISTORY_TAIL_CHARS } from './history.js'
 import { batchSummary, eventInput } from './events.js'
 
@@ -106,6 +106,7 @@ export class JobRunner {
    * @param {(target: { via: string, to: string }, message: { text: string, files: string[] }, from: { job: string, sessionId?: string }, options: { waitMs?: number, onWait?: Function }) => Promise<{ status: 'sent' | 'failed' | 'unavailable' | 'stopped', attempts: number, error?: string }>} [deps.send] - Hands a result to its delivery service (see deliver.js sendMessage); without it nothing is delivered.
    * @param {(sessionId: string, messageId: string, options: { signal?: AbortSignal }) => Promise<{ pending: true } | { text: string, reason?: string } | { error: string }>} [deps.answer] - Waits for the final answer to a prompt (see session.js waitForAnswer).
    * @param {ReturnType<typeof import('./answer-check.js').createAnswerChecks>} [deps.checks] - Answer checks (see answer-check.js); without it a job's answerCheck is ignored.
+   * @param {(runId: string) => void} [deps.onCutOff] - Told about a run whose turn DSH cut off and that waits for its rerun (see CronJobs.planRerun); without it the rerun stays pending.
    * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object }} [deps.defaults] - Plugin-level agent settings and the default delivery target.
    * @param {{ info: Function, warn: Function }} deps.logger
    * @param {AbortSignal} [deps.signal] - Stops a running command when aborted.
@@ -113,11 +114,12 @@ export class JobRunner {
    * @param {{ begin: Function, finish: Function }} [deps.history] - Saved run history (see history.js).
    * @param {() => Date} [deps.now]
    */
-  constructor(job, { run, wake, reuse, keepSession, settle, send, answer, checks, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
+  constructor(job, { run, wake, reuse, keepSession, settle, send, answer, checks, onCutOff, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
     this.job = job
     this.send = send
     this.answer = answer
     this.checks = checks
+    this.onCutOff = onCutOff
     this.reuse = reuse
     this.keepSession = keepSession
     this.settle = settle
@@ -143,10 +145,10 @@ export class JobRunner {
   /**
    * Run the job once. `running` and `current` are set before the first await,
    * so a caller can read them as soon as this returns its promise.
-   * @param {{ trigger?: 'schedule' | 'manual' | 'event', events?: { events: object[], dropped: number } }} [options] - What started the run; an event run carries its batch of events.
+   * @param {{ trigger?: 'schedule' | 'manual' | 'event', events?: { events: object[], dropped: number }, rerunOf?: object }} [options] - What started the run; an event run carries its batch of events; a rerun carries the saved run it reruns (see continueRun).
    * @returns {Promise<{ status: 'skipped' | 'done' | 'failed' | 'idle' | 'woke' | 'wake-failed', sessionId?: string }>}
    */
-  async tick({ trigger = 'schedule', events } = {}) {
+  async tick({ trigger = 'schedule', events, rerunOf } = {}) {
     const { job, logger } = this
     if (this.running) {
       logger.warn('[%s] previous run still going; skipping this tick', job.name)
@@ -156,18 +158,27 @@ export class JobRunner {
     this.running = true
     const firedAt = this.now()
     const summary = events ? batchSummary(events) : undefined
-    this.current = { startedAt: firedAt.toISOString(), trigger, ...(summary ? { events: summary } : {}) }
+    this.current = { startedAt: firedAt.toISOString(), trigger, ...(summary ? { events: summary } : {}), ...(rerunOf ? { rerunOf: rerunOf.id } : {}) }
     let result
     let outcome = { status: 'failed' }
     let thrown
     let runId
     try {
-      logger.info('[%s] start%s', job.name, trigger === 'manual' ? ' (run now)' : summary ? ` (${summary.count} event(s) on ${summary.channels.join(', ')})` : '')
+      logger.info('[%s] start%s', job.name, rerunOf ? ` (rerun of the run started ${rerunOf.startedAt})` : trigger === 'manual' ? ' (run now)' : summary ? ` (${summary.count} event(s) on ${summary.channels.join(', ')})` : '')
       // A start line on its own shows a run that never finished (DSH stopped mid-run).
-      await this.record({ time: firedAt.toISOString(), job: job.name, event: 'start', ...(trigger !== 'schedule' ? { trigger } : {}), ...(summary ? { events: summary } : {}) })
-      runId = await this.history.begin(jobKey(job), { trigger, startedAt: firedAt.toISOString(), ...(summary ? { events: summary } : {}) })
-      outcome = await this.runOnce(firedAt, r => { result = r }, { trigger, events })
-      outcome = await this.deliverResult(outcome, result)
+      await this.record({ time: firedAt.toISOString(), job: job.name, event: 'start', ...(trigger !== 'schedule' ? { trigger } : {}), ...(summary ? { events: summary } : {}), ...(rerunOf ? { rerunOf: rerunOf.id } : {}) })
+      runId = await this.history.begin(jobKey(job), { trigger, startedAt: firedAt.toISOString(), ...(summary ? { events: summary } : {}), ...(rerunOf ? { rerunOf: rerunOf.id } : {}) })
+      if (rerunOf) {
+        await this.history.update(jobKey(job), rerunOf.id, { rerun: { status: 'started', at: firedAt.toISOString(), runId } })
+        outcome = await this.continueRun(rerunOf)
+      } else {
+        outcome = await this.runOnce(firedAt, r => { result = r }, { trigger, events })
+      }
+      // The woken turn is watched until it ends: its answer is delivered, and a cut-off turn runs again.
+      if (outcome.status === 'woke' && outcome.messageId && outcome.sessionId && this.answer !== undefined) {
+        outcome = { ...outcome, turn: { status: 'pending', messageId: outcome.messageId } }
+      }
+      outcome = await this.deliverResult(outcome, result, { rerun: rerunOf !== undefined })
       return outcome
     } catch (error) {
       thrown = describeError(error)
@@ -201,6 +212,7 @@ export class JobRunner {
           queued: outcome.queued,
           reuseNote: outcome.reuseNote,
           targeted: outcome.targeted,
+          turn: outcome.turn,
           archive: outcome.archive,
           delivery: outcome.delivery,
           error: thrown ?? outcome.error ?? result?.error,
@@ -215,7 +227,11 @@ export class JobRunner {
       this.running = false
       this.current = null
       if (outcome.archive === 'pending' && runId !== undefined) this.watchArchive(outcome.sessionId, runId)
-      if (outcome.delivery?.status === 'pending' && runId !== undefined) this.watchDelivery(outcome.sessionId, runId, outcome.delivery)
+      if (runId !== undefined) {
+        const delivery = outcome.delivery?.status === 'pending' ? outcome.delivery : undefined
+        if (outcome.turn?.status === 'pending') this.watchTurn(outcome.sessionId, runId, outcome.turn.messageId, delivery)
+        else if (delivery?.message !== undefined) this.watchDelivery(outcome.sessionId, runId, delivery)
+      }
     }
   }
 
@@ -232,17 +248,21 @@ export class JobRunner {
    * A gate that decided not to wake, and a run stopped by an unload, send
    * nothing.
    */
-  async deliverResult({ messageId, ...outcome }, result) {
+  async deliverResult({ messageId, ...outcome }, result, { rerun = false } = {}) {
     const target = this.deliveryTarget()
     if (target === undefined) return outcome
     const { job } = this
     const where = { via: target.via, to: target.to }
     if (outcome.status === 'woke') {
-      if (!messageId || !outcome.sessionId) return outcome
-      return { ...outcome, delivery: { status: 'pending', ...where, messageId } }
+      if (outcome.turn?.status !== 'pending') return outcome
+      return { ...outcome, delivery: { status: 'pending', ...where } }
     }
     let text
-    if (outcome.status === 'wake-failed') text = `⚠️ ${job.name}: could not wake the agent: ${outcome.error}`
+    if (outcome.status === 'wake-failed') {
+      text = rerun
+        ? `⚠️ ${job.name}: the run cut off by a DSH restart could not run again: ${outcome.error}`
+        : `⚠️ ${job.name}: could not wake the agent: ${outcome.error}`
+    }
     else if (result !== undefined && !result.aborted && (outcome.status === 'done' || outcome.status === 'failed')) text = commandResultText(job, result)
     else return outcome
     const message = messageFromText(text, job.cwd || undefined)
@@ -283,81 +303,154 @@ export class JobRunner {
   }
 
   /**
-   * Deliver a pending result in the background and save the outcome in the
-   * run's history: a message kept with the delivery (a command's output, a
-   * failure note), or else the woken agent's final answer once its turn
-   * ends. An empty answer or exactly [SILENT] sends nothing. A service that
-   * is not running is waited for (see deliver.js sendMessage). Left pending
-   * when the plugin unloads, for the next copy to finish (see
-   * resumeDeliveries).
+   * Deliver a message kept with a pending delivery (a command's output, a
+   * failure note) in the background and save the outcome in the run's
+   * history. Left pending when the plugin unloads, for the next copy to
+   * finish (see resumeRuns).
    */
   watchDelivery(sessionId, runId, pending) {
+    return this.background(this.deliveryWork(sessionId, runId, pending, () => this.sendPending(sessionId, runId, pending, pending.message)))
+  }
+
+  /**
+   * Wait in the background for the turn a woken prompt started, then save
+   * how it ended and deliver its final answer when the run has a pending
+   * delivery. An empty answer or exactly [SILENT] sends nothing. A turn DSH
+   * cut off (a restart or reload disposed it) delivers nothing and is marked
+   * for one rerun (see markCutOff). Left pending when the plugin unloads:
+   * the turn may still be running, and the next copy watches it again.
+   */
+  watchTurn(sessionId, runId, messageId, pending) {
     const { job, logger } = this
-    const target = { via: pending.via, to: pending.to ?? '' }
-    const save = delivery => this.history.update(jobKey(job), runId, { delivery })
-    const logEntry = delivery => this.record({
-      time: this.now().toISOString(), job: job.name, event: 'delivery', ...(sessionId ? { sessionId } : {}),
-      status: delivery.status, via: target.via, to: target.to, ...(delivery.error ? { error: delivery.error } : {}),
-    })
-    // Shown on the page and in the run log while the service is missing.
-    const onWait = (error) => {
-      logger.warn('[%s] %s; waiting for it to deliver the result', job.name, error)
-      save({ ...pending, error }).then(() => logEntry({ status: 'waiting', error })).catch(() => {})
-    }
-    const send = async (message) => {
-      const delivery = await this.deliverMessage(target, message, { sessionId, onWait })
-      // Unloading: the next copy of the plugin sends it.
-      if (delivery.status === 'pending') {
-        await logEntry({ status: 'pending', error: `${delivery.error}; left for the next start` })
-        return undefined
-      }
-      return delivery
-    }
-    const watch = (async () => {
+    const work = async () => {
+      const answer = await this.answer(sessionId, messageId, { signal: this.signal })
+      if ('pending' in answer || this.signal?.aborted) return undefined
+      const cut = 'text' in answer && cutOff(answer)
+      if ('text' in answer && !cut) await this.checks?.recheck(messageId, answer.text, { sessionId, signal: this.signal })
+      this.checks?.forget(messageId)
+      const reason = 'error' in answer ? 'error' : answer.reason
+      await this.history.update(jobKey(job), runId, { turn: { status: cut ? 'cut-off' : 'ended', messageId, ...(reason ? { reason } : {}) } })
       let delivery
-      if (pending.message !== undefined) {
-        delivery = await send(pending.message)
+      if (pending === undefined) {
+        delivery = undefined
+      } else if ('error' in answer) {
+        delivery = { status: 'failed', via: pending.via, to: pending.to ?? '', at: this.now().toISOString(), error: answer.error }
+        logger.warn('[%s] no answer to deliver from session %s: %s', job.name, sessionId, answer.error)
       } else {
-        if (this.answer === undefined) return
-        const answer = await this.answer(sessionId, pending.messageId, { signal: this.signal })
-        if ('pending' in answer || this.signal?.aborted) return
-        if ('text' in answer) await this.checks?.recheck(pending.messageId, answer.text, { sessionId, signal: this.signal })
-        this.checks?.forget(pending.messageId)
-        if ('error' in answer) {
-          delivery = { status: 'failed', ...target, at: this.now().toISOString(), error: answer.error }
-          logger.warn('[%s] no answer to deliver from session %s: %s', job.name, sessionId, answer.error)
+        const message = cut ? undefined : messageFromText(answer.text, agentSettings(job, this.defaults).cwd)
+        if (message === undefined) {
+          const ended = cut ? `turn cut off: ${answer.cause}` : answer.reason && answer.reason !== 'completed' ? `turn ended: ${answer.reason}` : undefined
+          delivery = { status: 'silent', via: pending.via, to: pending.to ?? '', at: this.now().toISOString(), ...(ended ? { error: ended } : {}) }
+          logger.info('[%s] nothing to deliver from session %s', job.name, sessionId)
         } else {
-          const message = messageFromText(answer.text, agentSettings(job, this.defaults).cwd)
-          if (message === undefined) {
-            delivery = { status: 'silent', ...target, at: this.now().toISOString(), ...(answer.reason && answer.reason !== 'completed' ? { error: `turn ended: ${answer.reason}` } : {}) }
-            logger.info('[%s] nothing to deliver from session %s', job.name, sessionId)
-          } else {
-            delivery = await send(message)
-          }
+          delivery = await this.sendPending(sessionId, runId, pending, message)
         }
       }
+      if (cut) await this.markCutOff(sessionId, runId)
+      return delivery
+    }
+    if (pending === undefined) {
+      return this.background(work().catch((error) => {
+        logger.warn('[%s] turn in session %s not watched: %s', job.name, sessionId, describeError(error))
+      }))
+    }
+    return this.background(this.deliveryWork(sessionId, runId, pending, work))
+  }
+
+  /** Run a delivery, then save and log its outcome; undefined from `work` means it stays pending. */
+  async deliveryWork(sessionId, runId, pending, work) {
+    const { job, logger } = this
+    const target = { via: pending.via, to: pending.to ?? '' }
+    try {
+      const delivery = await work()
       if (delivery === undefined) return
-      await save(delivery)
-      await logEntry(delivery)
-    })().catch((error) => {
+      await this.history.update(jobKey(job), runId, { delivery })
+      await this.logDelivery(sessionId, target, delivery)
+    } catch (error) {
       logger.warn('[%s] delivery from session %s failed: %s', job.name, sessionId, describeError(error))
-      if (!this.signal?.aborted) return save({ status: 'failed', ...target, at: this.now().toISOString(), error: describeError(error) })
-    }).finally(() => this.settling.delete(watch))
+      if (!this.signal?.aborted) await this.history.update(jobKey(job), runId, { delivery: { status: 'failed', ...target, at: this.now().toISOString(), error: describeError(error) } })
+    }
+  }
+
+  /**
+   * Send one message of a pending delivery. A service that is not running is
+   * waited for (see deliver.js sendMessage), shown on the page and in the
+   * run log meanwhile. Resolves undefined when the plugin unloads first.
+   */
+  async sendPending(sessionId, runId, pending, message) {
+    const { job, logger } = this
+    const target = { via: pending.via, to: pending.to ?? '' }
+    const onWait = (error) => {
+      logger.warn('[%s] %s; waiting for it to deliver the result', job.name, error)
+      this.history.update(jobKey(job), runId, { delivery: { ...pending, error } })
+        .then(() => this.logDelivery(sessionId, target, { status: 'waiting', error })).catch(() => {})
+    }
+    const delivery = await this.deliverMessage(target, message, { sessionId, onWait })
+    // Unloading: the next copy of the plugin sends it, from the kept message
+    // (the turn it came from is already recorded as ended).
+    if (delivery.status === 'pending') {
+      await this.history.update(jobKey(job), runId, { delivery: { ...pending, message } })
+      await this.logDelivery(sessionId, target, { status: 'pending', error: `${delivery.error}; left for the next start` })
+      return undefined
+    }
+    return delivery
+  }
+
+  logDelivery(sessionId, target, delivery) {
+    return this.record({
+      time: this.now().toISOString(), job: this.job.name, event: 'delivery', ...(sessionId ? { sessionId } : {}),
+      status: delivery.status, via: target.via, to: target.to, ...(delivery.error ? { error: delivery.error } : {}),
+    })
+  }
+
+  /** Keep a background promise in `settling` until it ends. */
+  background(promise) {
+    const watch = promise.finally(() => this.settling.delete(watch))
     this.settling.add(watch)
     return watch
   }
 
-  /** After a restart or reload: finish deliveries an earlier copy of the plugin left pending. */
-  async resumeDeliveries() {
+  /**
+   * A run's turn was cut off: save that its rerun is pending and tell the
+   * controller, which reruns it once DSH is back. A rerun is never rerun
+   * again, so a turn that keeps getting cut off does not loop.
+   */
+  async markCutOff(sessionId, runId) {
+    const { job, logger } = this
+    const run = this.history.runs(jobKey(job)).find(saved => saved.id === runId)
+    const time = this.now().toISOString()
+    if (run?.rerunOf !== undefined) {
+      const note = 'a rerun is not run again'
+      await this.history.update(jobKey(job), runId, { rerun: { status: 'skipped', at: time, note } })
+      await this.record({ time, job: job.name, event: 'rerun-skipped', runId, sessionId, note })
+      logger.warn('[%s] the rerun in session %s was cut off too; %s', job.name, sessionId, note)
+      return
+    }
+    await this.history.update(jobKey(job), runId, { rerun: { status: 'pending' } })
+    await this.record({ time, job: job.name, event: 'cut-off', runId, sessionId })
+    logger.warn('[%s] the turn in session %s was cut off before it finished; it runs again once DSH is back', job.name, sessionId)
+    this.onCutOff?.(runId)
+  }
+
+  /**
+   * After a restart or reload: pick up what an earlier copy of the plugin
+   * left pending. Turns are watched again (they may still be running, after
+   * a plugin reload or on a provider that outlives a restart), kept
+   * deliveries are sent, and cut-off runs go back to the controller for
+   * their rerun.
+   */
+  async resumeRuns() {
     for (const run of this.history.runs(jobKey(this.job))) {
-      if (run.delivery?.status !== 'pending') continue
-      if (run.delivery.message !== undefined) {
-        this.watchDelivery(run.sessionId, run.id, run.delivery)
-      } else if (run.sessionId && run.delivery.messageId) {
-        // The turn may still be running (a plugin reload, a turn that outlived a restart).
-        this.expectCheck(run.delivery.messageId)
-        this.watchDelivery(run.sessionId, run.id, run.delivery)
+      const delivery = run.delivery?.status === 'pending' ? run.delivery : undefined
+      // Runs saved before turns were tracked keep the prompt id on the delivery.
+      const messageId = run.turn === undefined ? delivery?.messageId : run.turn.status === 'pending' ? run.turn.messageId : undefined
+      if (delivery?.message !== undefined) {
+        this.watchDelivery(run.sessionId, run.id, delivery)
+      } else if (messageId && run.sessionId && this.answer !== undefined) {
+        this.expectCheck(messageId)
+        this.watchTurn(run.sessionId, run.id, messageId, delivery)
       }
+      if (run.rerun?.status === 'pending') this.onCutOff?.(run.id)
     }
   }
 
@@ -408,6 +501,40 @@ export class JobRunner {
     // Watched before the prompt is sent, so even a turn that ends at once is checked.
     this.expectCheck(messageId)
     const sent = await this.deliverPrompt({ job, target, text, messageId, settings, firedAt, localTime })
+    if (sent.status !== 'woke') this.checks?.forget(messageId)
+    return sent.status === 'woke' ? { ...sent, messageId } : sent
+  }
+
+  /**
+   * Rerun a cut-off run: ask its own session to finish the job. The session
+   * already holds the job's prompt (with any command output and events) and
+   * whatever the cut-off turn did, so continuing there neither loses that
+   * input nor repeats finished steps. A session a person has taken over is
+   * left alone unless it is the job's own target.
+   * @param {object} original - The saved run that was cut off.
+   */
+  async continueRun(original) {
+    const { job } = this
+    if (!original.sessionId) return { status: 'wake-failed', error: 'the cut-off run has no session' }
+    const settings = agentSettings(job, this.defaults)
+    const target = job.target ?? { kind: 'new' }
+    const text = buildRerunPrompt({
+      jobName: job.name,
+      ...(job.source === 'tool' ? { jobId: jobKey(job) } : {}),
+      firedAt: formatLocalTime(new Date(original.startedAt), job.timeZone || undefined),
+      delivery: this.deliveryTarget(),
+    })
+    const messageId = randomUUID()
+    this.expectCheck(messageId)
+    const archive = target.kind !== 'session' && settings.autoArchive && this.settle !== undefined ? { archive: 'pending' } : {}
+    const fresh = target.kind === 'new'
+    const sent = await this.sendToTarget(original.sessionId, text, {
+      mayUnarchive: true,
+      ignoreHold: !fresh,
+      archive,
+      messageId,
+      fields: fresh ? { reused: true, sessionOpenedAt: original.sessionOpenedAt ?? original.startedAt } : { targeted: true },
+    })
     if (sent.status !== 'woke') this.checks?.forget(messageId)
     return sent.status === 'woke' ? { ...sent, messageId } : sent
   }
@@ -493,21 +620,23 @@ export class JobRunner {
   /**
    * Send the prompt to the job's target session: an existing session the job
    * names, or the one a new_once job opened. Delivered even when a person
-   * uses the session; that is what the target is for. An archived session is
-   * unarchived first when `mayUnarchive` is set.
+   * uses the session (unless `ignoreHold` is false, as for a rerun into a
+   * session the job opened for itself); that is what the target is for. An
+   * archived session is unarchived first when `mayUnarchive` is set.
+   * `fields` describe the run's session in its outcome.
    * @returns {Promise<object>} The run outcome; `wake-failed` with the reason when not delivered.
    */
-  async sendToTarget(sessionId, text, { mayUnarchive, archive = {}, messageId }) {
+  async sendToTarget(sessionId, text, { mayUnarchive, ignoreHold = true, archive = {}, messageId, fields = { targeted: true } }) {
     const { job, logger } = this
     if (this.reuse === undefined) return { status: 'wake-failed', error: 'this host cannot deliver to existing sessions' }
     try {
       const sent = await this.withSessionLock(sessionId, async () => {
-        const delivered = await this.reuse({ sessionId, text, messageId, mayUnarchive, ignoreHold: true })
+        const delivered = await this.reuse({ sessionId, text, messageId, mayUnarchive, ignoreHold })
         this.latestRun.set(sessionId, null)
         return delivered
       })
       logger.info('[%s] sent the prompt to its session %s%s', job.name, sessionId, sent?.queued ? ' (queued behind its current turn)' : '')
-      return { status: 'woke', sessionId, targeted: true, ...(sent?.queued ? { queued: true } : {}), ...archive }
+      return { status: 'woke', sessionId, ...fields, ...(sent?.queued ? { queued: true } : {}), ...archive }
     } catch (error) {
       const reason = describeError(error)
       logger.warn('[%s] could not send the prompt to session %s: %s', job.name, sessionId, reason)
