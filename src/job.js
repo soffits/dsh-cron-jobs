@@ -3,6 +3,7 @@ import { decideWake } from './wake.js'
 import { commandResultText, describeTarget, messageFromText, resolveDelivery } from './deliver.js'
 import { buildAgentPrompt, formatLocalTime, sessionTitle } from './prompt.js'
 import { HISTORY_TAIL_CHARS } from './history.js'
+import { batchSummary, eventInput } from './events.js'
 
 /** Characters of stdout/stderr shown in the log after each run. */
 export const LOG_TAIL_CHARS = 400
@@ -142,10 +143,10 @@ export class JobRunner {
   /**
    * Run the job once. `running` and `current` are set before the first await,
    * so a caller can read them as soon as this returns its promise.
-   * @param {{ trigger?: 'schedule' | 'manual' }} [options] - What started the run.
+   * @param {{ trigger?: 'schedule' | 'manual' | 'event', events?: { events: object[], dropped: number } }} [options] - What started the run; an event run carries its batch of events.
    * @returns {Promise<{ status: 'skipped' | 'done' | 'failed' | 'idle' | 'woke' | 'wake-failed', sessionId?: string }>}
    */
-  async tick({ trigger = 'schedule' } = {}) {
+  async tick({ trigger = 'schedule', events } = {}) {
     const { job, logger } = this
     if (this.running) {
       logger.warn('[%s] previous run still going; skipping this tick', job.name)
@@ -154,17 +155,18 @@ export class JobRunner {
     }
     this.running = true
     const firedAt = this.now()
-    this.current = { startedAt: firedAt.toISOString(), trigger }
+    const summary = events ? batchSummary(events) : undefined
+    this.current = { startedAt: firedAt.toISOString(), trigger, ...(summary ? { events: summary } : {}) }
     let result
     let outcome = { status: 'failed' }
     let thrown
     let runId
     try {
-      logger.info('[%s] start%s', job.name, trigger === 'manual' ? ' (run now)' : '')
+      logger.info('[%s] start%s', job.name, trigger === 'manual' ? ' (run now)' : summary ? ` (${summary.count} event(s) on ${summary.channels.join(', ')})` : '')
       // A start line on its own shows a run that never finished (DSH stopped mid-run).
-      await this.record({ time: firedAt.toISOString(), job: job.name, event: 'start', ...(trigger === 'manual' ? { trigger } : {}) })
-      runId = await this.history.begin(jobKey(job), { trigger, startedAt: firedAt.toISOString() })
-      outcome = await this.runOnce(firedAt, r => { result = r })
+      await this.record({ time: firedAt.toISOString(), job: job.name, event: 'start', ...(trigger !== 'schedule' ? { trigger } : {}), ...(summary ? { events: summary } : {}) })
+      runId = await this.history.begin(jobKey(job), { trigger, startedAt: firedAt.toISOString(), ...(summary ? { events: summary } : {}) })
+      outcome = await this.runOnce(firedAt, r => { result = r }, { trigger, events })
       outcome = await this.deliverResult(outcome, result)
       return outcome
     } catch (error) {
@@ -363,7 +365,7 @@ export class JobRunner {
    * @param {Date} firedAt
    * @param {(result: import('./command.js').CommandResult) => void} keep - Receives the command result.
    */
-  async runOnce(firedAt, keep) {
+  async runOnce(firedAt, keep, { trigger = 'schedule', events } = {}) {
     const { job, logger } = this
     let result
     if (hasCommand(job)) {
@@ -372,6 +374,9 @@ export class JobRunner {
         cwd: job.cwd || undefined,
         timeoutMs: (job.timeoutSeconds ?? 0) * 1000,
         signal: this.signal,
+        // What started the run; an event run also gets its events on stdin.
+        env: { ...process.env, DSH_CRON_TRIGGER: trigger, DSH_CRON_JOB: jobKey(job) },
+        ...(events ? { input: eventInput(events) } : {}),
       })
       keep(result)
       this.logResult(result)
@@ -393,6 +398,7 @@ export class JobRunner {
       ...(job.source === 'tool' ? { jobId: jobKey(job) } : {}),
       prompt: job.agent.prompt,
       ...(result ? { stdout: result.stdout, droppedBytes: result.stdoutDropped } : {}),
+      ...(events ? { events } : {}),
       firedAt: localTime,
       delivery: this.deliveryTarget(),
     })

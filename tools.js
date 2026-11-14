@@ -15,7 +15,7 @@ export const inject = ['tools']
 
 export const Config = z.object({
   prefix: z.string().default('cron_job')
-    .description('Tool name prefix: <prefix>_create, _edit, _list and _view. "schedule" gives the names of DSH\'s built-in Schedule tools, for use in its place.'),
+    .description('Tool name prefix: <prefix>_create, _edit, _list, _view and _watch. "schedule" gives the names of DSH\'s built-in Schedule tools, for use in its place.'),
 })
 
 /** Runs shown by the view tool, and characters of each output tail. */
@@ -46,6 +46,12 @@ export function toolSchemas(prefix) {
     answerCheck: { type: 'string', description: 'Shell command run in the session\'s cwd on the agent\'s final answer (on stdin) before its turn closes. Empty stdout passes the answer; any stdout is sent back into the turn as a request to rewrite it, once per run. Skipped for [SILENT].' },
     cwd: { type: 'string', description: 'Working directory of the command and of new sessions; defaults to this session\'s.' },
     deliver: { type: 'string', description: 'Where each run\'s result is sent: "<service>:<address>", a DSH service that delivers messages and an address it understands (such as telegramTopics:notify), or "none". The result is the agent\'s final answer (exactly [SILENT] sends nothing; MEDIA:<path> lines become attachments), or for a job without a prompt the command\'s stdout and failures. Defaults to the plugin\'s default target, or none when the prompt goes to an existing session.' },
+    on: {
+      type: 'array',
+      items: { type: 'string' },
+      description: `Event channels that start a run, with * for any characters (mail.sakina, ci.*, dsh.started). Events come from \`dsh-cron-event <channel>\` (any script or hook), from watchers (${prefix}_watch), and dsh.started once after each DSH start. Events within about 30 s run the job once; the command gets them as JSON on stdin and the prompt gets them appended as untrusted data. A job with on may leave out the schedule; keep a slower one as a safety net when events can be missed.`,
+    },
+    once: { type: 'boolean', description: 'End the job after its first run that was not started by hand (an event or a scheduled run). With on: dsh.started, it waits for the next DSH start.' },
   }
   const model = {
     type: 'object',
@@ -66,6 +72,14 @@ export function toolSchemas(prefix) {
       timeZone: { type: 'string', description: 'IANA zone such as America/Toronto. Required with cron and with an at without offset; rrule takes its zone from DTSTART.' },
       model,
     }, ['title']),
+    watch: object({
+      action: { type: 'string', enum: ['create', 'delete', 'list'], description: 'create starts a new watcher; delete stops and removes one; list shows every watcher with its state.' },
+      id: { type: 'string', description: 'Watcher id: letters, digits, _ . - (create, delete).' },
+      channel: { type: 'string', description: 'Channel its output lines are emitted on, such as mail.sakina (create).' },
+      command: { type: 'string', description: 'Shell command run with bash that keeps running and prints one line per change (create). A JSON object line is the event\'s data (its "id" field dedupes), any other line its text; {"wakeAgent": false} lines are ignored. It is restarted with backoff when it exits; down for 15 minutes sends one alert. It gets DSH_CRON_STATE_DIR, a directory for its cursor, so it can catch up after a restart.' },
+      cwd: { type: 'string', description: 'Working directory; defaults to this session\'s (create).' },
+      once: { type: 'boolean', description: 'Run the command one time and remove the watcher when it exits, for a one-off wait such as `gh run watch 123 --exit-status >/dev/null; echo "{\\"exit\\": $?}"` (create).' },
+    }, ['action']),
     edit: object({
       id: { type: 'string', description: 'Job id.' },
       action: {
@@ -77,13 +91,17 @@ export function toolSchemas(prefix) {
       prompt: { ...fields.prompt, description: 'New prompt; an empty string removes it.' },
       command: { ...fields.command, description: 'New command; an empty string removes it.' },
       answerCheck: { ...fields.answerCheck, description: 'New answer check command; an empty string removes it.' },
-      ...schedule,
+      cron: { ...schedule.cron, description: `${schedule.cron.description} An empty cron, rrule or at removes the schedule of a job with on.` },
+      rrule: schedule.rrule,
+      at: schedule.at,
       timeZone: { type: 'string', description: `Zone for a new cron or at, as in ${prefix}_create; given alone, it moves a cron schedule to this zone.` },
       target: { ...fields.target, description: `New target, as in ${prefix}_create.` },
       sessionId: fields.sessionId,
       cwd: { type: 'string', description: 'New working directory of the command and of new sessions.' },
       deliver: { type: 'string', description: `New delivery target, as in ${prefix}_create; an empty string returns to the default.` },
       model: { ...model, description: `New model, as in ${prefix}_create. An empty object ({}) returns to the preset's or host default.` },
+      on: { ...fields.on, description: `New event channels, as in ${prefix}_create; an empty list removes them.` },
+      once: fields.once,
     }, ['id', 'action']),
     list: object({}, []),
     view: object({ id: { type: 'string', description: 'Job id.' } }, ['id']),
@@ -122,13 +140,15 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
 
   return [
     tool('create',
-      'Create a scheduled job. Each run executes command and/or delivers prompt to the target session as a scheduled message from the user. Give exactly one of cron, rrule or at. Returns the job with its id and next run. A run missed while DSH was down happens once at startup.',
+      'Create a scheduled job. Each run executes command and/or delivers prompt to the target session as a scheduled message from the user. Give one of cron, rrule or at, and/or on (event channels) to run when an event arrives instead of polling. Returns the job with its id and next run. A run missed while DSH was down happens once at startup.',
       async (args, jobs, agent) => modelJob(await jobs.create({
         title: args.title,
         prompt: args.prompt,
         command: args.command,
         answerCheck: args.answerCheck,
         schedule: { cron: args.cron, rrule: args.rrule, at: args.at, timeZone: args.timeZone },
+        ...(args.on !== undefined ? { on: args.on } : {}),
+        ...(args.once !== undefined ? { once: args.once } : {}),
         cwd: args.cwd || callerCwd(agent),
         preset: callerPreset(agent),
         ...(toModel(args.model) ? { model: toModel(args.model) } : {}),
@@ -141,7 +161,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
       `Update, pause, resume or delete one job created with ${prefix}_create, by id. Jobs from the plugin config are read-only.`,
       async (args, jobs, agent) => {
         const { id, action } = args
-        const changes = ['title', 'prompt', 'command', 'answerCheck', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver', 'model'].filter(key => args[key] !== undefined)
+        const changes = ['title', 'prompt', 'command', 'answerCheck', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver', 'model', 'on', 'once'].filter(key => args[key] !== undefined)
         if (action !== 'update' && changes.length > 0) return failure('invalid_arguments', `${action} takes only id and action.`)
         if (action === 'delete') return await jobs.remove(id)
         if (action === 'pause' || action === 'resume') {
@@ -159,6 +179,8 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
           command: args.command,
           answerCheck: args.answerCheck,
           cwd: args.cwd,
+          on: args.on,
+          once: args.once,
           ...(args.model !== undefined ? { model: toModel(args.model) ?? null } : {}),
           ...(scheduleGiven ? { schedule: { cron: args.cron, rrule: args.rrule, at: args.at, timeZone: args.timeZone } } : {}),
           ...(targetGiven ? { target: await resolveTarget(ctx, agent, args.target ?? 'new', args.sessionId) } : {}),
@@ -178,6 +200,25 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
         return { ...modelJob(job), recentRuns: (jobs.runs(id) ?? []).slice(0, VIEW_RUNS).map(modelRun) }
       },
       'View scheduled job', 'read'),
+    tool('watch',
+      `Manage watchers: long-running commands whose output lines are events on a channel, which start the jobs listening on it (on in ${prefix}_create). Use them to react to a stream (a mailbox push connection, a notification feed, a log) instead of polling, or with once for a one-off wait that survives a DSH restart.`,
+      async (args, jobs, agent) => {
+        const { action } = args
+        const given = ['id', 'channel', 'command', 'cwd', 'once'].filter(key => args[key] !== undefined)
+        if (action === 'list') {
+          if (given.length > 0) return failure('invalid_arguments', 'list takes only action.')
+          return { watchers: jobs.listWatchers().map(modelWatcher) }
+        }
+        if (action === 'delete') {
+          if (given.some(key => key !== 'id') || !args.id) return failure('invalid_arguments', 'delete takes action and id.')
+          return await jobs.removeWatcher(args.id)
+        }
+        return modelWatcher(await jobs.createWatcher({
+          id: args.id, channel: args.channel, command: args.command,
+          cwd: args.cwd || callerCwd(agent), once: args.once === true, createdBy: agent?.session?.id,
+        }))
+      },
+      'Manage watchers', 'other'),
   ]
 }
 
@@ -266,6 +307,9 @@ export function modelJob(job, { brief = false } = {}) {
     ...(job.error ? { error: job.error } : {}),
     schedule: job.schedule?.text ?? null,
     ...(job.nextRunAt ? { nextRunAt: job.nextRunAt, nextRunAtLocal: `${formatLocalTime(new Date(job.nextRunAt), zone)}${zone ? ` ${zone}` : ''}` } : { nextRunAt: null }),
+    ...(job.on ? { on: job.on } : {}),
+    ...(job.once ? { once: true } : {}),
+    ...(job.pendingEvents ? { pendingEvents: job.pendingEvents } : {}),
     ...(job.target ? { target: job.target.sessionId ? `${job.target.kind} ${job.target.sessionId}` : job.target.kind } : {}),
     ...(job.agent?.model ? { model: job.agent.model } : {}),
     deliver: job.deliver?.via ? (job.deliver.to ? `${job.deliver.via}:${job.deliver.to}` : job.deliver.via) : 'none',
@@ -278,11 +322,17 @@ export function modelJob(job, { brief = false } = {}) {
   }
 }
 
+/** A watcher as the model sees it. */
+function modelWatcher(view) {
+  return Object.fromEntries(Object.entries(view).filter(([, value]) => value !== null && value !== undefined))
+}
+
 function modelRun(run) {
   const tail = text => (text && text.length > VIEW_TAIL_CHARS ? `…${text.slice(-VIEW_TAIL_CHARS)}` : text)
   return Object.fromEntries(Object.entries({
     startedAt: run.startedAt,
     trigger: run.trigger,
+    events: run.events ? `${run.events.count} on ${run.events.channels.join(', ')}` : undefined,
     status: run.status,
     outcome: run.outcome,
     sessionId: run.sessionId,
@@ -302,6 +352,11 @@ export function checkArgs(schema, args) {
     const property = schema.properties[key]
     if (property === undefined) return `unknown argument ${key}`
     if (value === undefined) continue
+    if (property.type === 'array') {
+      if (!Array.isArray(value)) return `${key} must be an array`
+      if (value.some(item => typeof item !== property.items.type)) return `${key} must hold only ${property.items.type}s`
+      continue
+    }
     if (property.type === 'object') {
       if (value === null || typeof value !== 'object' || Array.isArray(value)) return `${key} must be an object`
       const inner = checkArgs(property, value)

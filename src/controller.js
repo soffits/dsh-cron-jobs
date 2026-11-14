@@ -2,6 +2,8 @@ import { JobRunner, agentModel, agentSettings, isGated, jobKind } from './job.js
 import { CronTimer, ScheduleError, ScheduleTimer, describeSchedule, parseSchedule, scheduleFromInput } from './schedule.js'
 import { JobStore } from './store.js'
 import { deliveryTarget, resolveDelivery } from './deliver.js'
+import { DEFAULT_COALESCE_SECONDS, DEFAULT_MAX_RUNS_PER_HOUR, Deduper, EventBatcher, EventInputError, checkPatterns, normalizeEvent, subscribed } from './events.js'
+import { WatcherInputError, WatcherSupervisor, checkWatcher } from './watchers.js'
 
 /** How often the watchdog looks for lost timers. */
 export const WATCHDOG_MS = 60_000
@@ -71,8 +73,12 @@ export class CronJobs {
    * @param {() => Date} [options.now]
    * @param {number} [options.watchdogMs] - How often the watchdog looks for lost timers; 0 turns it off.
    * @param {number} [options.overdueMs] - How far past its due time a tick must be before the watchdog runs it.
+   * @param {{ coalesceSeconds?: number, maxRunsPerHour?: number }} [options.events] - Event batching (events.js).
+   * @param {{ set: typeof setTimeout, clear: typeof clearTimeout }} [options.timers] - Event batch timers; replaceable for tests.
+   * @param {object[]} [options.watchers] - Watchers from the plugin config.
+   * @param {object} [options.watcherOptions] - Passed to {@link WatcherSupervisor} (stateRoot, limits, spawn).
    */
-  constructor({ jobs, logger, run, wake, reuse, settle, send, answer, checks, defaults = {}, signal, record, history, CronClass = CronTimer, TimerClass = ScheduleTimer, now = () => new Date(), watchdogMs = WATCHDOG_MS, overdueMs = OVERDUE_MS }) {
+  constructor({ jobs, logger, run, wake, reuse, settle, send, answer, checks, defaults = {}, signal, record, history, CronClass = CronTimer, TimerClass = ScheduleTimer, now = () => new Date(), watchdogMs = WATCHDOG_MS, overdueMs = OVERDUE_MS, events = {}, timers, watchers = [], watcherOptions = {} }) {
     this.logger = logger
     this.defaults = defaults
     this.history = history
@@ -84,6 +90,25 @@ export class CronJobs {
     this.overdueMs = overdueMs
     this.record = record ?? (async () => {})
     this.deps = { run, wake, reuse, settle, send, answer, checks, defaults, logger, signal, record, history, now }
+    this.eventSettings = {
+      coalesceMs: (events.coalesceSeconds ?? DEFAULT_COALESCE_SECONDS) * 1000,
+      maxRunsPerHour: events.maxRunsPerHour ?? DEFAULT_MAX_RUNS_PER_HOUR,
+      ...(timers ? { timers } : {}),
+    }
+    this.deduper = new Deduper({ now: () => this.now().getTime() })
+    this.configWatchers = []
+    for (const def of watchers) {
+      if (def.enabled === false) continue
+      try {
+        const clean = checkWatcher(def)
+        if (this.configWatchers.some(other => other.id === clean.id)) throw new WatcherInputError(`duplicate watcher id ${clean.id}`)
+        this.configWatchers.push({ ...clean, source: 'config' })
+      } catch (error) {
+        logger.error('[watcher %s] not started: %s', def?.id, error instanceof Error ? error.message : String(error))
+      }
+    }
+    this.watcherOptions = watcherOptions
+    this.supervisor = undefined
     /** @type {Map<string, { job: object, runner: JobRunner, spec?: object, record?: object, timer?: any, error?: string }>} */
     this.entries = new Map()
     this.inflight = new Set()
@@ -111,7 +136,65 @@ export class CronJobs {
       ...(entry.record ? { keepSession: sessionId => this.keepSession(entry, sessionId) } : {}),
     })
     this.entries.set(entry.job.id, entry)
+    this.subscribe(entry)
     return entry
+  }
+
+  /** (Re)create the event batcher of a job with `on`; waiting events are dropped. */
+  subscribe(entry) {
+    entry.batcher?.discard()
+    entry.batcher?.stop()
+    entry.batcher = undefined
+    if (!(entry.job.on?.length > 0)) return
+    entry.batcher = new EventBatcher({
+      ...this.eventSettings,
+      now: () => this.now().getTime(),
+      busy: () => entry.runner.running,
+      start: batch => this.runEvents(entry, batch),
+    })
+  }
+
+  /** Start an event run; the batcher only calls this when the job is idle. */
+  runEvents(entry, batch) {
+    if (this.stopped || !this.listening(entry)) return
+    this.runTracked(entry, entry.runner.tick({ trigger: 'event', events: batch }), { scheduled: true })
+  }
+
+  /**
+   * Whether a job takes events now: it subscribes, is not paused, ended or
+   * disabled, and its definition is valid.
+   */
+  listening(entry) {
+    if (entry.batcher === undefined || entry.error !== undefined) return false
+    if (entry.record) return entry.record.status === 'active'
+    return entry.job.enabled !== false && !this.pausedEntry(entry)
+  }
+
+  /**
+   * Take one event: drop a duplicate, hand it to every job listening on its
+   * channel, and call `release` once all those runs have started.
+   * @param {object} input - `{ channel, data?, text?, key?, source?, at? }`.
+   * @param {() => void} [release]
+   * @returns {{ matched: string[], duplicate?: true }} Ids of the jobs it went to.
+   * @throws {EventInputError} for a malformed event.
+   */
+  emit(input, release = () => {}) {
+    const event = normalizeEvent(input, this.now)
+    if (this.stopped) throw Object.assign(new Error('the scheduler is stopping'), { code: 'unavailable' })
+    if (this.deduper.seenBefore(event)) {
+      release()
+      this.record({ time: this.now().toISOString(), job: null, event: 'event', channel: event.channel, duplicate: true })
+      return { matched: [], duplicate: true }
+    }
+    const targets = [...this.entries.values()].filter(entry => this.listening(entry) && subscribed(entry.job.on, event.channel))
+    let left = targets.length
+    const done = () => { if (--left === 0) release() }
+    if (left === 0) release()
+    for (const entry of targets) entry.batcher.add(event, done)
+    const matched = targets.map(entry => entry.job.id)
+    this.record({ time: this.now().toISOString(), job: null, event: 'event', channel: event.channel, ...(event.source ? { source: event.source } : {}), matched })
+    if (matched.length > 0) this.logger.info('event %s for %s', event.channel, matched.join(', '))
+    return { matched }
   }
 
   /** Arm the timers of jobs that should run; paused jobs start held. */
@@ -130,7 +213,85 @@ export class CronJobs {
       this.watchdog = setInterval(() => this.checkOverdue(), this.watchdogMs)
       this.watchdog.unref?.()
     }
+    this.startWatchers()
     return this
+  }
+
+  /** Start the config and stored watchers. */
+  startWatchers() {
+    if (this.supervisor !== undefined || this.stopped) return
+    this.supervisor = new WatcherSupervisor({
+      ...this.watcherOptions,
+      emit: event => this.emit(event),
+      logger: this.logger,
+      record: this.record,
+      notify: (text, def) => this.notifyDefault(text, `watcher ${def.id}`),
+      onDone: id => this.watcherDone(id),
+    })
+    this.supervisor.set(this.watcherDefinitions())
+  }
+
+  /** Every watcher that should run: config ones first, then stored ones whose id is free. */
+  watcherDefinitions() {
+    const defs = [...this.configWatchers]
+    for (const [, stored] of this.history?.watchers?.entries() ?? []) {
+      if (defs.some(def => def.id === stored.id)) continue
+      defs.push({ id: stored.id, channel: stored.channel, command: stored.command, ...(stored.cwd ? { cwd: stored.cwd } : {}), ...(stored.once ? { once: true } : {}), source: 'tool' })
+    }
+    return defs
+  }
+
+  /** Send a note to the plugin's default delivery target, if there is one. */
+  async notifyDefault(text, from) {
+    const target = resolveDelivery({}, this.defaults.deliver)
+    if (target === undefined || this.deps.send === undefined) {
+      this.logger.warn('%s: %s (no delivery target)', from, text)
+      return
+    }
+    const sent = await this.deps.send(target, { text, files: [] }, { job: from }, {})
+    if (sent.status !== 'sent') this.logger.warn('%s: note not delivered: %s', from, sent.error)
+  }
+
+  /** A once watcher finished: forget its stored definition. */
+  async watcherDone(id) {
+    const table = this.history?.watchers
+    if (table?.get(id) === undefined) return
+    await table.delete(id)
+    this.supervisor?.set(this.watcherDefinitions())
+  }
+
+  /**
+   * Create a stored watcher and start it.
+   * @param {{ id: string, channel: string, command: string, cwd?: string, once?: boolean, createdBy?: string }} input
+   */
+  async createWatcher(input) {
+    const table = this.history?.watchers
+    if (table === undefined) throw new JobInputError('invalid_state', 'watcher storage is not available')
+    const def = checkWatcher(input)
+    if (this.configWatchers.some(other => other.id === def.id) || table.get(def.id) !== undefined) throw new WatcherInputError(`a watcher with id ${def.id} already exists`)
+    await table.put(def.id, { ...def, createdAt: this.now().toISOString(), ...(input.createdBy ? { createdBy: input.createdBy } : {}) })
+    this.supervisor?.set(this.watcherDefinitions())
+    return this.watcherView(def.id)
+  }
+
+  /** Stop and delete a stored watcher. */
+  async removeWatcher(id) {
+    const table = this.history?.watchers
+    if (this.configWatchers.some(other => other.id === id)) throw new JobInputError('read_only', `watcher ${JSON.stringify(id)} is defined in the plugin config; change it there`)
+    if (table?.get(id) === undefined) throw new JobInputError('not_found', `no watcher with id ${JSON.stringify(id)}`)
+    await table.delete(id)
+    this.supervisor?.set(this.watcherDefinitions())
+    return { id, deleted: true }
+  }
+
+  /** Watchers with their status. */
+  listWatchers() {
+    const running = new Map((this.supervisor?.list() ?? []).map(view => [view.id, view]))
+    return this.watcherDefinitions().map(def => running.get(def.id) ?? { id: def.id, channel: def.channel, command: def.command, cwd: def.cwd ?? null, once: def.once === true, source: def.source, state: 'stopped' })
+  }
+
+  watcherView(id) {
+    return this.listWatchers().find(view => view.id === id)
   }
 
   /**
@@ -169,7 +330,17 @@ export class CronJobs {
       this.logger.error('[%s] not scheduled: %s', job.name, entry.error)
       return
     }
+    if (job.onError) {
+      entry.error = job.onError
+      this.logger.error('[%s] not scheduled: %s', job.name, entry.error)
+      return
+    }
     if (record ? record.status === 'ended' : job.enabled === false) return
+    // Runs only on events: no timer.
+    if (entry.spec === undefined && !job.specError && job.on?.length > 0) {
+      this.logger.info('[%s] listening on %s%s', job.name, job.on.join(', '), this.pausedEntry(entry) ? ' (paused)' : '')
+      return
+    }
     const paused = this.pausedEntry(entry)
     let timer
     try {
@@ -201,22 +372,39 @@ export class CronJobs {
 
   fire(entry) {
     if (this.pausedEntry(entry)) return
-    const tick = entry.runner.tick()
-    this.track(entry.record ? tick.finally(() => this.saveNext(entry)) : tick, entry.job.name)
+    this.runTracked(entry, entry.runner.tick(), { scheduled: true })
   }
 
-  /** After a scheduled run of a stored job: save its next run, or end it. */
+  /**
+   * Track a run; afterwards save a stored job's next run (for runs not
+   * started by hand) and let a waiting event batch run.
+   */
+  runTracked(entry, tick, { scheduled = false } = {}) {
+    const after = tick.finally(async () => {
+      if (scheduled && entry.record) await this.saveNext(entry)
+    }).finally(() => entry.batcher?.idle())
+    return this.track(after, entry.job.name)
+  }
+
+  /**
+   * After a scheduled or event run of a stored job: save its next run, or
+   * end it (a once job, or a schedule with no more runs and no events to
+   * wait for).
+   */
   async saveNext(entry) {
     if (this.entries.get(entry.job.id) !== entry || this.store === undefined) return
     const current = this.store.get(entry.job.id)
     if (current === undefined) return
     const next = entry.timer?.nextRun() ?? null
-    const status = current.status === 'active' && next === null ? 'ended' : current.status
+    const listens = current.on?.length > 0
+    const ends = current.status === 'active' && (current.once === true || (next === null && !listens))
+    const status = ends ? 'ended' : current.status
     await this.saveRecord(entry, { ...current, status, scheduledAt: next?.toISOString() })
     if (status === 'ended') {
       entry.timer?.stop()
       entry.timer = undefined
-      this.logger.info('[%s] ended: no more runs', entry.job.name)
+      entry.batcher?.discard()
+      this.logger.info('[%s] ended: %s', entry.job.name, current.once ? 'it runs once' : 'no more runs')
     }
   }
 
@@ -250,9 +438,13 @@ export class CronJobs {
     if (this.stopped) return Promise.allSettled([...this.inflight])
     this.stopped = true
     clearInterval(this.watchdog)
-    for (const entry of this.entries.values()) entry.timer?.stop()
+    for (const entry of this.entries.values()) {
+      entry.timer?.stop()
+      entry.batcher?.stop()
+    }
+    const watchers = this.supervisor?.stop()
     const stopping = this.record({ time: this.now().toISOString(), job: null, event: 'scheduler-stop' })
-    await Promise.allSettled([...this.inflight, stopping])
+    await Promise.allSettled([...this.inflight, stopping, watchers])
   }
 
   isPaused(id) {
@@ -292,7 +484,7 @@ export class CronJobs {
     if (entry === undefined) return { ok: false, code: 'not-found' }
     if (this.stopped) return { ok: false, code: 'stopped' }
     if (entry.runner.running) return { ok: false, code: 'busy' }
-    this.track(entry.runner.tick({ trigger: 'manual' }), entry.job.name)
+    this.runTracked(entry, entry.runner.tick({ trigger: 'manual' }))
     return { ok: true, startedAt: entry.runner.current.startedAt }
   }
 
@@ -305,13 +497,14 @@ export class CronJobs {
   async setPaused(id, paused) {
     const entry = this.entries.get(id)
     if (entry === undefined) return { ok: false, code: 'not-found' }
+    if (paused) entry.batcher?.discard()
     if (entry.record) {
       if (entry.record.status === 'ended') return { ok: false, code: 'ended' }
       let status = paused ? 'paused' : 'active'
       if (paused) entry.timer?.pause?.()
       else entry.timer?.resume?.()
       const next = entry.timer?.nextRun() ?? null
-      if (!paused && entry.timer && next === null) status = 'ended'
+      if (!paused && entry.timer && next === null && !(entry.record.on?.length > 0)) status = 'ended'
       await this.saveRecord(entry, {
         ...entry.record, status, updatedAt: this.now().toISOString(),
         scheduledAt: entry.timer ? next?.toISOString() : entry.record.scheduledAt,
@@ -351,21 +544,24 @@ export class CronJobs {
   async create(input) {
     const store = this.requireStore()
     const now = this.now()
-    const spec = scheduleFromInput(input.schedule)
+    const on = input.on === undefined ? [] : patterns(input.on)
+    const spec = hasSchedule(input.schedule) || on.length === 0 ? scheduleFromInput(input.schedule ?? {}) : undefined
     const draft = {
       id: '',
       title: title(input.title),
       ...text('prompt', input.prompt),
       ...text('command', input.command),
       ...text('answerCheck', input.answerCheck),
-      schedule: spec,
+      ...(spec ? { schedule: spec } : {}),
+      ...(on.length > 0 ? { on } : {}),
+      ...(input.once === true ? { once: true } : {}),
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(input.preset ? { preset: input.preset } : {}),
       target: input.target ?? { kind: 'new' },
       ...(deliveryTarget(input.deliver) !== undefined ? { deliver: deliveryTarget(input.deliver) } : {}),
       ...(input.model !== undefined ? { model: storedModel(input.model) } : {}),
       status: 'active',
-      scheduledAt: firstRun(spec, now),
+      ...(spec ? { scheduledAt: firstRun(spec, now) } : {}),
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
       ...(input.createdBy ? { createdBy: input.createdBy } : {}),
@@ -404,16 +600,33 @@ export class CronJobs {
     if (patch.target !== undefined) next.target = patch.target
     if (patch.deliver !== undefined) next.deliver = deliveryTarget(patch.deliver)
     if (patch.model !== undefined) next.model = patch.model === null ? undefined : storedModel(patch.model)
-    if (patch.schedule !== undefined) {
-      next.schedule = changedSchedule(current.schedule, patch.schedule)
-      next.scheduledAt = firstRun(next.schedule, now)
-      if (next.status === 'ended') next.status = 'active'
+    if (patch.on !== undefined) {
+      const on = patterns(patch.on)
+      if (on.length > 0) next.on = on
+      else delete next.on
     }
+    if (patch.once !== undefined) {
+      if (patch.once) next.once = true
+      else delete next.once
+    }
+    if (patch.schedule !== undefined) {
+      const schedule = changedSchedule(current.schedule, patch.schedule)
+      if (schedule === null) {
+        delete next.schedule
+        delete next.scheduledAt
+      } else {
+        next.schedule = schedule
+        next.scheduledAt = firstRun(next.schedule, now)
+      }
+    }
+    // A new schedule or new subscriptions bring an ended job back.
+    if (next.status === 'ended' && (patch.schedule !== undefined || (patch.on !== undefined && next.on))) next.status = 'active'
     requireWork(next)
     await this.saveRecord(entry, next)
     entry.job = fromStored(entry.record)
     entry.spec = entry.job.spec
     entry.runner.job = entry.job
+    this.subscribe(entry)
     if (!this.stopped) this.arm(entry)
     this.logger.info('[%s] updated stored job %s', entry.job.name, id)
     return this.view(entry)
@@ -424,6 +637,8 @@ export class CronJobs {
     const entry = this.storedEntry(id)
     entry.timer?.stop()
     entry.timer = undefined
+    entry.batcher?.discard()
+    entry.batcher?.stop()
     await this.store.delete(id)
     this.entries.delete(id)
     await this.history?.forget(id)
@@ -451,7 +666,7 @@ export class CronJobs {
     else if (job.enabled === false) state = 'disabled'
     else if (error !== undefined) state = 'invalid'
     else if (paused) state = 'paused'
-    else if (spec?.kind !== 'cron' && timer && this.nextRun(entry) === null) state = 'ended'
+    else if (spec?.kind !== 'cron' && timer && this.nextRun(entry) === null && !(job.on?.length > 0)) state = 'ended'
     else state = 'active'
     const next = state === 'active' ? this.nextRun(entry) : null
     const gated = isGated(job)
@@ -465,6 +680,9 @@ export class CronJobs {
       paused,
       pausedAt: record ? (paused ? record.updatedAt : null) : this.history?.state(job.id).pausedAt ?? null,
       schedule: spec ? { ...spec, text: describeSchedule(spec) } : null,
+      on: job.on?.length > 0 ? job.on : null,
+      once: job.once === true,
+      pendingEvents: entry.batcher?.size > 0 ? { count: entry.batcher.size, dueAt: new Date(entry.batcher.dueAt).toISOString() } : null,
       cron: spec?.kind === 'cron' ? spec.expression : null,
       timeZone: scheduleZone(spec) ?? null,
       command: job.command || null,
@@ -502,10 +720,19 @@ export class CronJobs {
 /** A config job as the runner and timers see it. */
 function fromConfig(job) {
   const given = ['cron', 'rrule', 'at'].filter(key => typeof job[key] === 'string' && job[key].trim() !== '')
+  let on
+  let onError
+  try {
+    on = checkPatterns(job.on ?? [])
+  } catch (error) {
+    onError = error.message
+  }
   let spec
   let specError
-  if (given.length !== 1) {
-    specError = 'set exactly one of cron, rrule or at'
+  if (given.length === 0 && on?.length > 0) {
+    // Runs only on events.
+  } else if (given.length !== 1) {
+    specError = on?.length > 0 ? 'set at most one of cron, rrule or at' : 'set exactly one of cron, rrule or at, or on'
   } else if (given[0] === 'cron') {
     spec = { kind: 'cron', expression: job.cron, ...(job.timeZone ? { timeZone: job.timeZone } : {}) }
   } else {
@@ -523,6 +750,8 @@ function fromConfig(job) {
     ...(spec?.kind !== 'cron' && spec ? { timeZone: scheduleZone(spec) } : {}),
     spec,
     specError,
+    on: on ?? [],
+    ...(onError ? { onError } : {}),
     ...(sessionId ? { target: { kind: 'session', sessionId } } : {}),
   }
 }
@@ -541,6 +770,8 @@ function fromStored(record) {
     target: record.target,
     ...(record.deliver !== undefined ? { deliver: record.deliver } : {}),
     spec: record.schedule,
+    on: record.on ?? [],
+    ...(record.once ? { once: true } : {}),
   }
 }
 
@@ -565,11 +796,25 @@ function firstRun(spec, now) {
   return first.toISOString()
 }
 
+/** The edited schedule, or null when an empty cron, rrule or at removes it. */
 function changedSchedule(current, input) {
   const { cron, rrule, at, timeZone } = input
   if ([cron, rrule, at].some(value => value !== undefined && value !== '')) return scheduleFromInput(input)
-  if (timeZone !== undefined && current.kind === 'cron') return scheduleFromInput({ cron: current.expression, timeZone })
+  if ([cron, rrule, at].some(value => value === '')) return null
+  if (timeZone !== undefined && current?.kind === 'cron') return scheduleFromInput({ cron: current.expression, timeZone })
   throw new ScheduleError('invalid_rule', 'give cron, rrule or at for the new schedule (timeZone alone changes only a cron schedule)')
+}
+
+function hasSchedule(input) {
+  return input !== undefined && ['cron', 'rrule', 'at'].some(key => typeof input[key] === 'string' && input[key].trim() !== '')
+}
+
+function patterns(list) {
+  try {
+    return checkPatterns(list)
+  } catch (error) {
+    throw new JobInputError('invalid_job', error.message)
+  }
 }
 
 function title(value) {
@@ -592,6 +837,7 @@ function storedModel(value) {
 
 function requireWork(record) {
   if (!record.prompt && !record.command) throw new JobInputError('invalid_job', 'a job needs a prompt, a command, or both')
+  if (record.schedule === undefined && !(record.on?.length > 0)) throw new JobInputError('invalid_job', 'a job needs a schedule, on (event channels), or both')
   if ((record.target.kind === 'session') && !record.target.sessionId) throw new JobInputError('invalid_job', 'a session target needs a session id')
 }
 

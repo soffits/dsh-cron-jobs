@@ -1,5 +1,6 @@
 import z from '@deepseek-ai/schemastery'
 import { DEFAULT_HISTORY_RECORDS } from './history.js'
+import { DEFAULT_COALESCE_SECONDS, DEFAULT_MAX_RUNS_PER_HOUR } from './events.js'
 
 /** Default limit for one run of a job's command. */
 export const DEFAULT_TIMEOUT_SECONDS = 3600
@@ -29,10 +30,11 @@ const Agent = z.object({
 
 const Job = z.object({
   name: z.string().required().description('Job name, used in logs and session titles.'),
-  cron: z.string().description('Cron expression (5 fields, or 6 with seconds first). Set exactly one of cron, rrule and at.'),
+  cron: z.string().description('Cron expression (5 fields, or 6 with seconds first). Set at most one of cron, rrule and at; a job with on needs none.'),
   rrule: z.string().role('textarea').description('RFC 5545 schedule: a DTSTART line and an RRULE line, such as "DTSTART;TZID=Europe/Berlin:20260901T080000" and "RRULE:FREQ=WEEKLY;BYDAY=MO". The zone comes from DTSTART.'),
   at: z.string().description('Run once at this time: ISO 8601 with an offset, or a local date-time read in timeZone.'),
   timeZone: z.string().description('IANA time zone for the cron expression or an at without offset, such as Europe/Berlin. The host zone when empty (an at without offset needs it).'),
+  on: z.array(z.string()).default([]).description('Event channels that start a run, such as mail.sakina or alerts.* (* matches any characters). Events arriving close together run the job once; the gate command gets them as JSON on stdin and the prompt gets them appended. Keep a slower schedule as a safety net.'),
   command: z.string().role('textarea').description('Shell command, run with bash (or sh when bash is missing). Leave empty for an agent-only job, which sends agent.prompt at every run.'),
   cwd: z.string().description('Working directory of the command. The host process directory when empty.'),
   timeoutSeconds: z.natural().default(DEFAULT_TIMEOUT_SECONDS)
@@ -42,8 +44,23 @@ const Job = z.object({
   agent: Agent,
 })
 
+const Watcher = z.object({
+  id: z.string().required().description('Watcher id (letters, digits, _ . -), shown in logs and alerts.'),
+  channel: z.string().required().description('Channel each output line is emitted on, such as mail.sakina.'),
+  command: z.string().role('textarea').required().description('Long-running shell command, run with bash. Each stdout line is an event: a JSON object line is its data, any other line its text; {"wakeAgent": false} lines are ignored. It is restarted with backoff when it exits.'),
+  cwd: z.string().description('Working directory. The host process directory when empty.'),
+  enabled: z.boolean().default(true).description('Run this watcher.'),
+})
+
+const Events = z.object({
+  coalesceSeconds: z.natural().default(DEFAULT_COALESCE_SECONDS).description('Events for one job that arrive within this many seconds of the first one start a single run.'),
+  maxRunsPerHour: z.natural().default(DEFAULT_MAX_RUNS_PER_HOUR).description('Most event-started runs of one job in any hour; past that, events wait and run together. 0 means no cap.'),
+})
+
 export const Config = z.object({
   jobs: z.array(Job).default([]).description('Scheduled jobs.'),
+  watchers: z.array(Watcher).default([]).description('Long-running commands whose output lines are events (see a job\'s on). Watchers can also be added from a conversation with the watch tool.'),
+  events: Events.description('How events are batched into runs.'),
   defaultAgentCwd: z.string().description('Working directory of woken sessions for jobs whose agent.cwd is empty. Sessions are only found by session search from the same directory, so this is usually the main workspace.'),
   autoArchive: z.boolean().default(true).description('Archive woken sessions once their turn ends, for jobs that do not set agent.autoArchive. Archived sessions leave the sidebar\'s active list but stay in DSH and in session search.'),
   reuseWithinHours: z.number().min(0).default(0).description('Reuse window for jobs that do not set agent.reuseWithinHours: send the prompt into the job\'s previous woken session when it was opened within this many hours. 0 always opens a new session.'),

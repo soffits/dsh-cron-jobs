@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { storedJobSchema } from './store.js'
+import { storedJobSchema, storedWatcherSchema } from './store.js'
 
 /** Default number of runs kept per job. */
 export const DEFAULT_HISTORY_RECORDS = 50
@@ -10,7 +10,9 @@ export const HISTORY_TAIL_CHARS = 1000
 
 const runSchema = z.object({
   id: z.string(),
-  trigger: z.enum(['schedule', 'manual']),
+  trigger: z.enum(['schedule', 'manual', 'event']),
+  // Events that started an event run: how many, and on which channels.
+  events: z.object({ count: z.number(), channels: z.array(z.string()) }).optional(),
   startedAt: z.string(),
   // 'running' while the command runs; afterwards the run's outcome:
   // done, idle, woke, failed, wake-failed, or interrupted (DSH stopped mid-run).
@@ -68,14 +70,14 @@ const jobStateSchema = z.object({
  * The `single` layout keeps everything in one unit, so keys need no
  * escaping; a record that fails validation is backed up and skipped instead
  * of blocking the whole domain. A table missing from an older file loads as
- * empty, so adding `tasks` needed no version change.
+ * empty, so adding `tasks` and `watchers` needed no version change.
  */
 export const historyDomain = Object.freeze({
   name: 'cron_jobs',
   version: 1,
   layout: 'single',
   invalidRecords: 'backup-and-skip',
-  tables: { jobs: { valueSchema: jobStateSchema }, tasks: { valueSchema: storedJobSchema } },
+  tables: { jobs: { valueSchema: jobStateSchema }, tasks: { valueSchema: storedJobSchema }, watchers: { valueSchema: storedWatcherSchema } },
 })
 
 /** @typedef {z.infer<typeof runSchema>} Run */
@@ -99,9 +101,10 @@ export class HistoryStore {
    * @param {boolean} [options.durable] - Whether the table survives a restart.
    * @param {object} [options.tasks] - Table of stored jobs, see store.js; in memory when omitted.
    */
-  constructor({ table, limit = DEFAULT_HISTORY_RECORDS, logger, close = async () => {}, durable = false, tasks = memoryTable() }) {
+  constructor({ table, limit = DEFAULT_HISTORY_RECORDS, logger, close = async () => {}, durable = false, tasks = memoryTable(), watchers = memoryTable() }) {
     this.table = table
     this.tasks = tasks
+    this.watchers = watchers
     this.limit = limit
     this.logger = logger
     this.closeTable = close
@@ -133,11 +136,11 @@ export class HistoryStore {
    * Save a started run and drop the oldest ones beyond the limit.
    * @returns {Promise<string>} The run id.
    */
-  async begin(name, { trigger, startedAt }) {
+  async begin(name, { trigger, startedAt, events }) {
     const id = randomUUID()
     await this.change(name, state => ({
       ...state,
-      runs: [...state.runs, { id, trigger, startedAt, status: 'running' }].slice(-this.limit),
+      runs: [...state.runs, { id, trigger, startedAt, status: 'running', ...(events ? { events } : {}) }].slice(-this.limit),
     }))
     return id
   }
@@ -248,7 +251,7 @@ export async function openHistory(storageDomain, { limit, logger, signal, retryM
     try {
       const domain = await storageDomain.open(historyDomain)
       const store = new HistoryStore({
-        table: domain.table('jobs'), tasks: domain.table('tasks'), limit, logger, durable: true, close: () => domain.close(),
+        table: domain.table('jobs'), tasks: domain.table('tasks'), watchers: domain.table('watchers'), limit, logger, durable: true, close: () => domain.close(),
       })
       await store.markInterrupted()
       return store
