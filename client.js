@@ -10,7 +10,7 @@
  * tokens (--dsw-*). Icon paths are copied from DSH's icon set (MIT).
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-cron-jobs',
+  id: '@soffits/dsh-cron-jobs',
   factory(require) {
     const React = require('react')
     const h = React.createElement
