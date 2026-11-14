@@ -58,8 +58,8 @@ export function apply(ctx, config) {
         reuse: request => deliverToSession(ctx, request),
         settle: (sessionId, options) => archiveWhenIdle(ctx, sessionId, options),
         // The channel is found by name at send time, so it may load after
-        // this plugin, reload, or be missing (the run records the failure).
-        send: (target, message, from) => sendMessage({ lookup: name => ctx.get(name), target, message, from, signal: controller.signal }),
+        // this plugin, reload, or be missing for a while (the delivery waits).
+        send: (target, message, from, options) => sendMessage({ lookup: name => ctx.get(name), target, message, from, signal: controller.signal, ...options }),
         answer: (sessionId, messageId, options) => waitForAnswer(ctx, sessionId, messageId, options),
         checks,
         defaults: {
