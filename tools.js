@@ -43,6 +43,7 @@ export function toolSchemas(prefix) {
       description: 'Where the prompt goes; defaults to new. this_session: this session, for reminders and follow-ups to this conversation. new_once: one new session, opened by the first run and used by every later run. new: a new session for each run, archived once its turn ends. New sessions use cwd and this session\'s agent preset.',
     },
     sessionId: { type: 'string', description: 'Deliver to this other existing session instead of target.' },
+    answerCheck: { type: 'string', description: 'Shell command run in the session\'s cwd on the agent\'s final answer (on stdin) before its turn closes. Empty stdout passes the answer; any stdout is sent back into the turn as a request to rewrite it, once per run. Skipped for [SILENT].' },
     cwd: { type: 'string', description: 'Working directory of the command and of new sessions; defaults to this session\'s.' },
     deliver: { type: 'string', description: 'Where each run\'s result is sent: "<service>:<address>", a DSH service that delivers messages and an address it understands (such as telegramTopics:notify), or "none". The result is the agent\'s final answer (exactly [SILENT] sends nothing; MEDIA:<path> lines become attachments), or for a job without a prompt the command\'s stdout and failures. Defaults to the plugin\'s default target, or none when the prompt goes to an existing session.' },
   }
@@ -75,6 +76,7 @@ export function toolSchemas(prefix) {
       title: { type: 'string', description: 'New job name.' },
       prompt: { ...fields.prompt, description: 'New prompt; an empty string removes it.' },
       command: { ...fields.command, description: 'New command; an empty string removes it.' },
+      answerCheck: { ...fields.answerCheck, description: 'New answer check command; an empty string removes it.' },
       ...schedule,
       timeZone: { type: 'string', description: `Zone for a new cron or at, as in ${prefix}_create; given alone, it moves a cron schedule to this zone.` },
       target: { ...fields.target, description: `New target, as in ${prefix}_create.` },
@@ -125,6 +127,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
         title: args.title,
         prompt: args.prompt,
         command: args.command,
+        answerCheck: args.answerCheck,
         schedule: { cron: args.cron, rrule: args.rrule, at: args.at, timeZone: args.timeZone },
         cwd: args.cwd || callerCwd(agent),
         preset: callerPreset(agent),
@@ -138,7 +141,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
       `Update, pause, resume or delete one job created with ${prefix}_create, by id. Jobs from the plugin config are read-only.`,
       async (args, jobs, agent) => {
         const { id, action } = args
-        const changes = ['title', 'prompt', 'command', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver', 'model'].filter(key => args[key] !== undefined)
+        const changes = ['title', 'prompt', 'command', 'answerCheck', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver', 'model'].filter(key => args[key] !== undefined)
         if (action !== 'update' && changes.length > 0) return failure('invalid_arguments', `${action} takes only id and action.`)
         if (action === 'delete') return await jobs.remove(id)
         if (action === 'pause' || action === 'resume') {
@@ -154,6 +157,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
           title: args.title,
           prompt: args.prompt,
           command: args.command,
+          answerCheck: args.answerCheck,
           cwd: args.cwd,
           ...(args.model !== undefined ? { model: toModel(args.model) ?? null } : {}),
           ...(scheduleGiven ? { schedule: { cron: args.cron, rrule: args.rrule, at: args.at, timeZone: args.timeZone } } : {}),
@@ -266,7 +270,7 @@ export function modelJob(job, { brief = false } = {}) {
     ...(job.agent?.model ? { model: job.agent.model } : {}),
     deliver: job.deliver?.via ? (job.deliver.to ? `${job.deliver.via}:${job.deliver.to}` : job.deliver.via) : 'none',
     ...(brief ? {} : {
-      ...(job.agent ? { prompt: job.agent.prompt, preset: job.agent.preset, sessionCwd: job.agent.cwd } : {}),
+      ...(job.agent ? { prompt: job.agent.prompt, preset: job.agent.preset, sessionCwd: job.agent.cwd, ...(job.agent.answerCheck ? { answerCheck: job.agent.answerCheck } : {}) } : {}),
       ...(job.command ? { command: job.command, cwd: job.cwd } : {}),
       ...(job.createdBy ? { createdBy: job.createdBy } : {}),
     }),

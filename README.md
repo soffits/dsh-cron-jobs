@@ -108,6 +108,7 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
 | `agent.reuseWithinHours` | Send the prompt into the job's previous woken session when that session was opened less than this many hours ago (see below). `0` always opens a new session. The row's `reuseWithinHours` when unset. |
 | `agent.model.provider`, `agent.model.model` | Model of the new session, with the same provider and model ids the model picker uses. Both must be set; otherwise the preset's or the Host's default model applies. |
 | `agent.model.reasoningEffort` | Reasoning effort id for that model. The model's default when empty. |
+| `agent.answerCheck` | Command that checks the agent's final answer before its turn closes (see [Answer checks](#answer-checks)). No check when empty. |
 
 Next to `jobs`, the row also takes:
 
@@ -161,6 +162,14 @@ A job with a delivery target sends its result when a run is over:
 Where results go is decided per job: its own `deliver` (or `false`), otherwise nothing for jobs that post into an existing session (`agent.sessionId`, or the tools' `this_session` / `sessionId`), since the answer is already in that conversation, otherwise the row's `deliver`. A run stopped because DSH is shutting down delivers nothing.
 
 Each run's delivery shows on the Cron tasks page and in the run log: waiting for the answer, sent, nothing to send, or not sent with the reason. The answer of a turn still running when DSH stops is picked up and delivered after the next start.
+
+### Answer checks
+
+A job can name a command, `agent.answerCheck` (or `answerCheck` in the tools), that looks at the agent's final answer while the turn can still change it. When the turn that the job's prompt started is about to close, the command runs with the answer on stdin, in the session's working directory, with a 60-second limit. Empty stdout passes the answer. Anything it prints goes back into the same turn as a message asking for a rewrite, and the agent's next answer is the one delivered. Each run is steered at most once, so a check that never passes cannot keep a turn going. Empty answers, `[SILENT]` and answers with only `MEDIA:` lines are not checked. A command that fails or times out lets the answer through.
+
+Use it for checks that are cheap to script and costly to miss, such as the answer's language or a format the channel needs. The run log gets an `answer-check` line per check (`passed`, `steered` or `error`) and, after a rewrite, an `answer-recheck` line saying whether the delivered answer passed (`fixed` or `still-flagged`).
+
+It works on DSH's `agent/turn-stopping` hook: a listener that steers a message there makes the agent loop run one more step in the same turn.
 
 ### Delivery channels
 
@@ -222,6 +231,8 @@ Where the prompt goes (`target`):
 - `this_session`: the session that created the job, for reminders and follow-ups to the conversation. `sessionId` names another existing session instead.
 
 `deliver` takes `<service>:<address>` (such as `telegramTopics:notify`) or `none`; the service must be running when the job is created. Left out, the job uses the row's default target, or delivers nothing when its prompt goes to an existing session. On `cron_job_edit`, an empty `deliver` goes back to the default.
+
+`answerCheck` sets the job's [answer check](#answer-checks) command; on `cron_job_edit`, an empty string removes it.
 
 `model` is an object, `{ "provider": "anthropic", "model": "claude-sonnet-4-5", "reasoningEffort": "high" }`, with the same ids the model picker uses; `provider` and `model` are required together and `reasoningEffort` is optional. The sessions the job opens start on that model, like `agent.model` on a config job; left out, the preset's or host default applies. `cron_job_edit` with `model` sets it on an existing job, and an empty object (`{}`) clears it. `cron_job_list` and `cron_job_view` show the model when one is set. A job that posts into an existing session (`this_session`, `sessionId`) does not open a session, so its model has no effect.
 

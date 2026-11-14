@@ -23,6 +23,7 @@ const Agent = z.object({
   sessionId: z.string().description('Send the prompt into this existing session instead of opening a new one. Empty: open a new session.'),
   model: Model,
   autoArchive: z.boolean().description('Archive the woken session once its turn ends, unless it is pinned or a person has sent it a message (such a session is also never reused). The plugin\'s autoArchive when unset.'),
+  answerCheck: z.string().description('Command that reads the agent\'s final answer on stdin before the turn closes. Empty output passes it; any output is sent back into the turn as a request to rewrite the answer (once per run). Empty: no check.'),
   reuseWithinHours: z.number().min(0).description('Send the prompt into this job\'s previous woken session instead of opening a new one, when that session was opened within this many hours. 0 always opens a new session. The plugin\'s reuseWithinHours when unset.'),
 }).description('Wake an agent: run the command as a gate and open a new session only when its output asks for it.')
 

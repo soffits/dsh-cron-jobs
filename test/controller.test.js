@@ -68,7 +68,7 @@ test('list shows each job with its state, schedule and next run', () => {
   assert.equal(jobs[0].nextRunAt, '2030-01-01T00:00:00.000Z')
   assert.equal(jobs[1].nextRunAt, null)
   assert.equal(jobs[2].error, 'invalid cron')
-  assert.deepEqual(jobs[3].agent, { prompt: 'look', preset: 'p', cwd: '/w', cwdSource: 'command', model: null, autoArchive: false, reuseWithinHours: 0 })
+  assert.deepEqual(jobs[3].agent, { prompt: 'look', preset: 'p', cwd: '/w', cwdSource: 'command', model: null, answerCheck: null, autoArchive: false, reuseWithinHours: 0 })
   assert.deepEqual(jobs[4].agent.model, { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' })
   assert.equal(jobs[0].command, 'true', 'the first copy of a duplicate name wins')
 })

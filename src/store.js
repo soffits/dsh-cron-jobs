@@ -32,6 +32,8 @@ export const storedJobSchema = z.object({
   title: z.string().min(1),
   prompt: z.string().optional(),
   command: z.string().optional(),
+  // Command that checks the agent's final answer before its turn closes (answer-check.js).
+  answerCheck: z.string().optional(),
   schedule: scheduleSchema,
   // Directory of the command and of new sessions.
   cwd: z.string().optional(),
