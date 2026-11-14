@@ -360,7 +360,7 @@ test('the final answer follows a fallback model continuation into the next turn'
   assert.deepEqual(finalAnswer(log, 'm1'), { done: true, text: 'Done on the fallback', reason: 'completed' })
   // Any other stop still ends the answer.
   const user = [...turn('m1', ['partial'], null), { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } } }]
-  assert.deepEqual(finalAnswer(user, 'm1'), { done: true, text: 'partial', reason: 'aborted' })
+  assert.deepEqual(finalAnswer(user, 'm1'), { done: true, text: 'partial', reason: 'aborted', cause: 'user' })
 })
 
 /**

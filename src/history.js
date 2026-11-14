@@ -32,6 +32,23 @@ const runSchema = z.object({
   reuseNote: z.string().optional(),
   // The prompt went to the job's target session (an existing session, or the one a new_once job opened).
   targeted: z.boolean().optional(),
+  // The turn the woken prompt started: pending until it ends, then ended, or
+  // cut-off when DSH disposed it (a restart or reload) before it finished.
+  turn: z.object({
+    status: z.enum(['pending', 'ended', 'cut-off']),
+    messageId: z.string(),
+    reason: z.string().optional(),
+  }).optional(),
+  // A cut-off run's one rerun: pending until DSH is back, then started (see
+  // runId) or skipped (see note).
+  rerun: z.object({
+    status: z.enum(['pending', 'started', 'skipped']),
+    at: z.string().optional(),
+    runId: z.string().optional(),
+    note: z.string().optional(),
+  }).optional(),
+  // This run reruns the cut-off run with this id.
+  rerunOf: z.string().optional(),
   // Auto-archive of the woken session: pending until its turn ends, then
   // archived, kept (see archiveNote), or superseded (a later run reused it).
   archive: z.enum(['pending', 'archived', 'kept', 'superseded']).optional(),
@@ -136,11 +153,11 @@ export class HistoryStore {
    * Save a started run and drop the oldest ones beyond the limit.
    * @returns {Promise<string>} The run id.
    */
-  async begin(name, { trigger, startedAt, events }) {
+  async begin(name, { trigger, startedAt, events, rerunOf }) {
     const id = randomUUID()
     await this.change(name, state => ({
       ...state,
-      runs: [...state.runs, { id, trigger, startedAt, status: 'running', ...(events ? { events } : {}) }].slice(-this.limit),
+      runs: [...state.runs, { id, trigger, startedAt, status: 'running', ...(events ? { events } : {}), ...(rerunOf ? { rerunOf } : {}) }].slice(-this.limit),
     }))
     return id
   }
