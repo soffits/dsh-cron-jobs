@@ -125,7 +125,7 @@ Next to `jobs`, the row also takes:
 
 - One run of a job at a time: if a tick arrives while the previous run is still going, the tick is skipped and logged.
 - Start, exit status, duration and a short tail of stdout and stderr go to the DSH log under `cron-jobs`. Sending the result anywhere else is what [Result delivery](#result-delivery) is for.
-- Set `runLog` (next to `jobs`) to a file path to also keep that record as JSON Lines: one `start` line per run, one `end` line with `status`, `outcome`, `exitCode`, `durationMs`, the output tails and the delivery state, a `delivery` line when a woken agent's answer has been delivered (or not), a `skipped` line for a skipped tick, an `overdue` line (with `dueAt` and `lateMs`) when a tick did not start on time and the watchdog ran it late, and `scheduler-start` / `scheduler-stop` lines (with `job: null`) when the scheduler starts or stops, so a gap in the log can be told apart from a lost tick. A `start` with no `end` means DSH stopped during the run. The file is only appended to; rotate it yourself if it grows.
+- Set `runLog` (next to `jobs`) to a file path to also keep that record as JSON Lines: one `start` line per run, one `end` line with `status`, `outcome`, `exitCode`, `durationMs`, the output tails and the delivery state, a `delivery` line when a result waits for its channel (`waiting`), is left for the next start (`pending`), or has been delivered or not (`sent`, `silent`, `failed`), a `skipped` line for a skipped tick, an `overdue` line (with `dueAt` and `lateMs`) when a tick did not start on time and the watchdog ran it late, and `scheduler-start` / `scheduler-stop` lines (with `job: null`) when the scheduler starts or stops, so a gap in the log can be told apart from a lost tick. A `start` with no `end` means DSH stopped during the run. The file is only appended to; rotate it yourself if it grows.
 - Ticks of config jobs missed while DSH is down are not caught up; the next tick runs normally. While DSH runs, a watchdog checks every minute that each job's next run is not more than a minute in the past; a tick whose timer was lost runs late instead of being missed. (Jobs created from a conversation catch up once, see below.)
 - Unloading the plugin (stopping DSH or changing its config) stops the timers and terminates running commands.
 
@@ -161,7 +161,7 @@ A job with a delivery target sends its result when a run is over:
 
 Where results go is decided per job: its own `deliver` (or `false`), otherwise nothing for jobs that post into an existing session (`agent.sessionId`, or the tools' `this_session` / `sessionId`), since the answer is already in that conversation, otherwise the row's `deliver`. A run stopped because DSH is shutting down delivers nothing.
 
-Each run's delivery shows on the Cron tasks page and in the run log: waiting for the answer, sent, nothing to send, or not sent with the reason. The answer of a turn still running when DSH stops is picked up and delivered after the next start.
+Each run's delivery shows on the Cron tasks page and in the run log: not sent yet (waiting for the answer or for the channel), sent, nothing to send, or not sent with the reason. A delivery still waiting when DSH stops or the plugin reloads, whether for a turn that is still running or for a channel that is not there, is picked up and delivered after the next start.
 
 ### Answer checks
 
@@ -187,7 +187,7 @@ await service.send({
 })
 ```
 
-The promise resolves when the message is sent and rejects with an `Error` when it is not. A rejected send is tried again twice (after 5 and 30 seconds), as is a service that is not running at that moment (for example while its plugin reloads). Set `retryable: false` on the error to stop the retries for a failure that will not go away, such as an unknown address. The return value is ignored. A send that still fails is recorded in the run's history and the run log; the job itself carries on.
+The promise resolves when the message is sent and rejects with an `Error` when it is not. A rejected send is tried again twice (after 5 and 30 seconds). A service that is not running (for example while its plugin reloads or is stuck unloading) is not a failed try: the delivery waits for it, looking again every 10 seconds for up to an hour, and a restart in that time leaves it pending for the next start, which waits again. Set `retryable: false` on the error to stop the retries for a failure that will not go away, such as an unknown address. The return value is ignored. A send that still fails is recorded in the run's history and the run log; the job itself carries on.
 
 To make a plugin a delivery channel, provide a service with that method:
 

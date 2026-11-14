@@ -108,8 +108,8 @@ test('sendMessage retries transient failures, stops on permanent ones, and never
   assert.deepEqual(await sendMessage({ lookup: () => flaky, target: NOTIFY, message: { text: 'x', files: [] }, from: { job: 'J' }, retryMs: [0] }),
     { status: 'sent', attempts: 3 })
 
-  const missing = await sendMessage({ lookup: () => undefined, target: NOTIFY, message: { text: 'x', files: [] }, from: { job: 'J' }, retryMs: [0] })
-  assert.deepEqual(missing, { status: 'failed', attempts: 3, error: 'no service named chat is running' })
+  const missing = await sendMessage({ lookup: () => undefined, target: NOTIFY, message: { text: 'x', files: [] }, from: { job: 'J' }, retryMs: [0], waitMs: 0 })
+  assert.deepEqual(missing, { status: 'unavailable', attempts: 0, error: 'no service named chat is running' })
 
   let permanentTries = 0
   const bad = { send: async () => { permanentTries++; throw Object.assign(new Error('unknown topic'), { retryable: false }) } }
@@ -119,6 +119,27 @@ test('sendMessage retries transient failures, stops on permanent ones, and never
 
   assert.deepEqual(await sendMessage({ lookup: () => ({}), target: NOTIFY, message: { text: 'x', files: [] }, from: { job: 'J' }, retryMs: [0] }),
     { status: 'failed', attempts: 1, error: 'service chat has no send method' })
+})
+
+test('sendMessage waits for a service that is not running, and gives up after the wait or when stopped', async () => {
+  const calls = []
+  let lookups = 0
+  const waits = []
+  const late = await sendMessage({
+    lookup: () => (++lookups < 4 ? undefined : { send: async request => { calls.push(request) } }),
+    target: NOTIFY, message: { text: 'x', files: [] }, from: { job: 'J' }, pollMs: 1, onWait: error => waits.push(error),
+  })
+  assert.deepEqual(late, { status: 'sent', attempts: 1 })
+  assert.equal(calls.length, 1)
+  assert.deepEqual(waits, ['no service named chat is running'])
+
+  const gone = await sendMessage({ lookup: () => undefined, target: NOTIFY, message: { text: 'x', files: [] }, from: { job: 'J' }, waitMs: 20, pollMs: 1 })
+  assert.equal(gone.status, 'unavailable')
+  assert.match(gone.error, /^no service named chat is running \(waited/)
+
+  const controller = new AbortController()
+  const stopped = sendMessage({ lookup: () => undefined, target: NOTIFY, message: { text: 'x', files: [] }, from: { job: 'J' }, pollMs: 5, signal: controller.signal, onWait: () => controller.abort() })
+  assert.deepEqual(await stopped, { status: 'stopped', attempts: 0, error: 'no service named chat is running' })
 })
 
 /** A runner with a recording channel; `answers` maps message ids to the agent's answer. */
@@ -167,12 +188,12 @@ test('a command job with empty output sends nothing, and a failure sends a note'
 
 test('a failed send is saved in the run history and the run log; the run still ends', async () => {
   const { runner, run, records } = deliverySetup({ name: 'Sync', command: 'x' }, {
-    result: ok('hello'), sendImpl: () => ({ status: 'failed', attempts: 3, error: 'no service named chat is running' }),
+    result: ok('hello'), sendImpl: () => ({ status: 'failed', attempts: 3, error: 'network down' }),
   })
   const outcome = await runner.tick()
   assert.equal(outcome.status, 'done')
   assert.deepEqual({ status: run().delivery.status, error: run().delivery.error, attempts: run().delivery.attempts },
-    { status: 'failed', error: 'no service named chat is running', attempts: 3 })
+    { status: 'failed', error: 'network down', attempts: 3 })
   assert.equal(records.at(-1).delivery, 'failed')
 })
 
@@ -340,4 +361,106 @@ test('the final answer follows a fallback model continuation into the next turn'
   // Any other stop still ends the answer.
   const user = [...turn('m1', ['partial'], null), { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } } }]
   assert.deepEqual(finalAnswer(user, 'm1'), { done: true, text: 'partial', reason: 'aborted' })
+})
+
+/**
+ * One copy of the scheduler, as index.js builds it, with the real
+ * sendMessage and a channel that is there only while `channel.up` is set.
+ * Aborting `signal` is the unload (a profile reload or a DSH restart).
+ */
+function schedulerCopy({ jobs, history, channel, records, answer }) {
+  const unload = new AbortController()
+  const controller = new CronJobs({
+    jobs,
+    logger: quiet,
+    history,
+    record: async entry => { records.push(entry) },
+    run: async () => ok('Morning digest'),
+    wake: async () => 'session-w',
+    send: (target, message, from, options) => sendMessage({
+      lookup: name => (name === 'chat' && channel.up ? channel.service : undefined),
+      target, message, from, signal: unload.signal, pollMs: 2, ...options,
+    }),
+    answer: answer ?? (async () => ({ text: 'Hello Livia', reason: 'completed' })),
+    defaults: { deliver: NOTIFY },
+    signal: unload.signal,
+    watchdogMs: 0,
+    CronClass: class { nextRun() { return null } stop() {} },
+  })
+  return { controller, unload, runner: name => controller.entries.get(name).runner }
+}
+
+const until = async (check) => { while (!check()) await new Promise(resolve => setTimeout(resolve, 2)) }
+
+for (const [kind, job, text, sessionId] of [
+  ['an agent answer', { name: 'Check-in', cron: '0 * * * *', agent: { prompt: 'p' } }, 'Hello Livia', 'session-w'],
+  ['a command result', { name: 'Digest', cron: '0 * * * *', command: 'x' }, 'Morning digest', undefined],
+]) {
+  test(`${kind} whose channel is missing waits, stays pending across an unload, and is sent after the restart`, async () => {
+    const history = new HistoryStore({ table: memoryTable(), logger: quiet })
+    const sent = []
+    const channel = { up: false, service: { send: async request => { sent.push(request) } } }
+    const records = []
+    const run = () => history.runs(job.name)[0]
+
+    // The channel's plugin is unloaded when the result is ready.
+    const first = schedulerCopy({ jobs: [job], history, channel, records })
+    first.controller.start()
+    const runner = first.runner(job.name)
+    await runner.tick()
+    await until(() => records.some(entry => entry.event === 'delivery' && entry.status === 'waiting'))
+    assert.equal(run().delivery.status, 'pending')
+    assert.equal(run().delivery.error, 'no service named chat is running')
+
+    // DSH restarts before the channel comes back.
+    await first.controller.stop()
+    first.unload.abort()
+    await drain(runner)
+    assert.equal(sent.length, 0)
+    assert.equal(run().delivery.status, 'pending')
+
+    // The next start resumes it; the channel loads a little after the scheduler.
+    const second = schedulerCopy({ jobs: [job], history, channel, records })
+    second.controller.start()
+    setTimeout(() => { channel.up = true }, 20)
+    await until(() => run().delivery.status !== 'pending')
+    await drain(second.runner(job.name))
+
+    assert.deepEqual(sent, [{ to: 'notify', text, files: [], from: { job: job.name, ...(sessionId ? { sessionId } : {}) } }])
+    assert.equal(run().delivery.status, 'sent')
+    assert.equal(run().delivery.message, undefined)
+    const deliveryLines = records.filter(entry => entry.event === 'delivery').map(entry => entry.status)
+    assert.equal(deliveryLines[0], 'waiting')
+    assert.ok(deliveryLines.includes('pending'))
+    assert.equal(deliveryLines.at(-1), 'sent')
+    second.unload.abort()
+    await second.controller.stop()
+  })
+}
+
+test('a delivery whose channel never comes back fails after the wait; a permanent error fails at once', async () => {
+  const history = new HistoryStore({ table: memoryTable(), logger: quiet })
+  const records = []
+  const runner = new JobRunner({ name: 'Digest', command: 'x' }, {
+    logger: quiet, history, defaults: { deliver: NOTIFY }, record: async entry => { records.push(entry) },
+    run: async () => ok('hi'), wake: async () => 's',
+    send: (target, message, from, options) => sendMessage({ lookup: () => undefined, target, message, from, pollMs: 1, ...options, waitMs: options.waitMs === 0 ? 0 : 20 }),
+  })
+  assert.equal((await runner.tick()).delivery.status, 'pending')
+  await drain(runner)
+  const run = history.runs('Digest')[0]
+  assert.equal(run.delivery.status, 'failed')
+  assert.match(run.delivery.error, /^no service named chat is running \(waited/)
+  assert.equal(records.at(-1).status, 'failed')
+
+  let tries = 0
+  const bad = { send: async () => { tries++; throw Object.assign(new Error('unknown topic'), { retryable: false }) } }
+  const strict = new JobRunner({ name: 'Digest', command: 'x' }, {
+    logger: quiet, history, defaults: { deliver: NOTIFY }, run: async () => ok('hi'), wake: async () => 's',
+    send: (target, message, from, options) => sendMessage({ lookup: () => bad, target, message, from, ...options }),
+  })
+  const outcome = await strict.tick()
+  assert.equal(outcome.delivery.status, 'failed')
+  assert.equal(outcome.delivery.error, 'unknown topic')
+  assert.equal(tries, 1)
 })

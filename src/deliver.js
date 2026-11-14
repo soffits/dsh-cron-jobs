@@ -21,6 +21,15 @@ export const DELIVERY_ATTEMPTS = 3
 /** Wait before each retry, in milliseconds. */
 export const DELIVERY_RETRY_MS = [5_000, 30_000]
 
+/**
+ * How long a delivery waits for its service to be running again (a plugin
+ * reload, a stuck unload) before it fails. A restart in between leaves the
+ * delivery pending, and the next start waits again.
+ */
+export const SERVICE_WAIT_MS = 60 * 60_000
+/** How often a waiting delivery looks for its service. */
+export const SERVICE_POLL_MS = 10_000
+
 /** Lines of stderr shown in a failure note. */
 export const FAILURE_STDERR_LINES = 15
 
@@ -167,42 +176,75 @@ function permanent(error) {
 
 /**
  * Hand one message to the target's service, retrying transient failures.
- * Never rejects.
+ * A service that is not running is waited for (looked up every `pollMs`, up
+ * to `waitMs` in all) instead of counting as a failed attempt. Never rejects.
+ *
+ * Results: `sent`; `failed` (the service threw on every attempt, or a
+ * permanent error); `unavailable` (the service was still not running after
+ * `waitMs`); `stopped` (the signal fired before the message was sent). The
+ * last two are not final: the caller decides whether to keep the message
+ * pending.
  * @param {object} options
  * @param {(name: string) => any} options.lookup - Finds a service by name.
  * @param {DeliveryTarget} options.target
  * @param {{ text: string, files: string[] }} options.message
  * @param {{ job: string, sessionId?: string }} options.from
- * @param {AbortSignal} [options.signal] - Stops waiting between attempts.
+ * @param {AbortSignal} [options.signal] - Stops waiting.
  * @param {number} [options.attempts]
  * @param {number[]} [options.retryMs]
- * @returns {Promise<{ status: 'sent' | 'failed', attempts: number, error?: string }>}
+ * @param {number} [options.waitMs] - Longest wait for a missing service; 0 gives up at once.
+ * @param {number} [options.pollMs]
+ * @param {(error: string) => void} [options.onWait] - Called once, when the wait for a missing service starts.
+ * @returns {Promise<{ status: 'sent' | 'failed' | 'unavailable' | 'stopped', attempts: number, error?: string }>}
  */
-export async function sendMessage({ lookup, target, message, from, signal, attempts = DELIVERY_ATTEMPTS, retryMs = DELIVERY_RETRY_MS }) {
+export async function sendMessage({
+  lookup, target, message, from, signal, attempts = DELIVERY_ATTEMPTS, retryMs = DELIVERY_RETRY_MS,
+  waitMs = SERVICE_WAIT_MS, pollMs = SERVICE_POLL_MS, onWait,
+}) {
+  const deadline = Date.now() + waitMs
+  const missing = `no service named ${target.via} is running`
+  let waiting = false
   let error
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    let retry = true
+  let tried = 0
+  while (tried < attempts) {
+    if (signal?.aborted) return { status: 'stopped', attempts: tried, error: error ?? 'stopped before sending' }
+    let service
     try {
-      const service = lookup(target.via)
-      if (service === undefined || service === null) {
-        throw new Error(`no service named ${target.via} is running`)
+      service = lookup(target.via)
+    } catch {
+      service = undefined
+    }
+    if (service === undefined || service === null) {
+      error = missing
+      if (Date.now() >= deadline) {
+        return { status: 'unavailable', attempts: tried, error: waitMs > 0 ? `${error} (waited ${minutes(waitMs)})` : error }
       }
-      if (typeof service.send !== 'function') {
-        retry = false
-        throw new Error(`service ${target.via} has no send method`)
+      if (!waiting) {
+        waiting = true
+        onWait?.(error)
       }
+      await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())), signal)
+      continue
+    }
+    if (typeof service.send !== 'function') {
+      return { status: 'failed', attempts: tried + 1, error: `service ${target.via} has no send method` }
+    }
+    tried++
+    try {
       await service.send({ to: target.to, text: message.text, files: [...message.files], from: { ...from } })
-      return { status: 'sent', attempts: attempt }
+      return { status: 'sent', attempts: tried }
     } catch (caught) {
       error = describe(caught)
-      if (!retry || permanent(caught)) return { status: 'failed', attempts: attempt, error }
+      if (permanent(caught)) return { status: 'failed', attempts: tried, error }
     }
-    if (attempt < attempts) {
-      await sleep(retryMs[Math.min(attempt - 1, retryMs.length - 1)] ?? 0, signal)
-      if (signal?.aborted) return { status: 'failed', attempts: attempt, error: `${error} (stopped before retrying)` }
-    }
+    if (tried < attempts) await sleep(retryMs[Math.min(tried - 1, retryMs.length - 1)] ?? 0, signal)
   }
   return { status: 'failed', attempts, error }
+}
+
+function minutes(ms) {
+  const count = Math.round(ms / 60_000)
+  return count >= 1 ? `${count} min` : `${Math.round(ms / 1000)} s`
 }
 
 function sleep(ms, signal) {

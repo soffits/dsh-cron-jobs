@@ -102,7 +102,7 @@ export class JobRunner {
    * @param {(request: { sessionId: string, text: string, mayUnarchive: boolean, ignoreHold?: boolean }) => Promise<{ queued?: boolean }>} [deps.reuse] - Sends the prompt into an existing session (see session.js deliverToSession); without it every wake opens a new session.
    * @param {(sessionId: string) => Promise<void>} [deps.keepSession] - Saves the session a new_once job opened, so later runs go to it.
    * @param {(sessionId: string, options: { signal?: AbortSignal, isLatest: () => boolean, lock: Function }) => Promise<{ archive: string, note?: string }>} [deps.settle] - Archives a session after its turn (see session.js archiveWhenIdle); without it nothing is archived.
-   * @param {(target: { via: string, to: string }, message: { text: string, files: string[] }, from: { job: string, sessionId?: string }) => Promise<{ status: 'sent' | 'failed', attempts: number, error?: string }>} [deps.send] - Hands a result to its delivery service (see deliver.js sendMessage); without it nothing is delivered.
+   * @param {(target: { via: string, to: string }, message: { text: string, files: string[] }, from: { job: string, sessionId?: string }, options: { waitMs?: number, onWait?: Function }) => Promise<{ status: 'sent' | 'failed' | 'unavailable' | 'stopped', attempts: number, error?: string }>} [deps.send] - Hands a result to its delivery service (see deliver.js sendMessage); without it nothing is delivered.
    * @param {(sessionId: string, messageId: string, options: { signal?: AbortSignal }) => Promise<{ pending: true } | { text: string, reason?: string } | { error: string }>} [deps.answer] - Waits for the final answer to a prompt (see session.js waitForAnswer).
    * @param {ReturnType<typeof import('./answer-check.js').createAnswerChecks>} [deps.checks] - Answer checks (see answer-check.js); without it a job's answerCheck is ignored.
    * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object }} [deps.defaults] - Plugin-level agent settings and the default delivery target.
@@ -245,59 +245,96 @@ export class JobRunner {
     else return outcome
     const message = messageFromText(text, job.cwd || undefined)
     if (message === undefined) return { ...outcome, delivery: { status: 'silent', ...where } }
-    return { ...outcome, delivery: await this.deliverMessage(target, message, {}) }
+    // No waiting inside the run: a missing service is waited for in the
+    // background (see watchDelivery), with the message kept for a restart.
+    const delivery = await this.deliverMessage(target, message, { waitMs: 0 })
+    return { ...outcome, delivery: delivery.status === 'pending' ? { ...delivery, message } : delivery }
   }
 
-  /** Send one message and log the result; resolves the run's delivery record. */
-  async deliverMessage(target, message, { sessionId }) {
+  /**
+   * Send one message and log the result; resolves the run's delivery record.
+   * Not sent because the plugin is stopping, or (with `waitMs` 0) because
+   * the service is not running: `pending`. Still not running after a longer
+   * wait: `failed`.
+   * @param {{ via: string, to: string }} target
+   * @param {{ text: string, files: string[] }} message
+   * @param {{ sessionId?: string, waitMs?: number, onWait?: (error: string) => void }} options
+   */
+  async deliverMessage(target, message, { sessionId, waitMs, onWait }) {
     const { job, logger } = this
-    const sent = await this.send(target, message, { job: job.name, ...(sessionId ? { sessionId } : {}) })
+    const sent = await this.send(target, message, { job: job.name, ...(sessionId ? { sessionId } : {}) }, {
+      ...(waitMs !== undefined ? { waitMs } : {}), ...(onWait ? { onWait } : {}),
+    })
     const where = describeTarget(target)
-    if (sent.status === 'sent') logger.info('[%s] delivered the result to %s', job.name, where)
+    const pending = sent.status === 'stopped' || (sent.status === 'unavailable' && waitMs === 0)
+    const status = sent.status === 'sent' ? 'sent' : pending ? 'pending' : 'failed'
+    if (status === 'sent') logger.info('[%s] delivered the result to %s', job.name, where)
+    else if (status === 'pending') logger.info('[%s] result for %s not sent yet: %s', job.name, where, sent.error)
     else logger.warn('[%s] result not delivered to %s after %s attempt(s): %s', job.name, where, sent.attempts, sent.error)
     return {
-      status: sent.status,
+      status,
       via: target.via,
       to: target.to,
-      attempts: sent.attempts,
-      at: this.now().toISOString(),
+      ...(status === 'pending' ? {} : { attempts: sent.attempts, at: this.now().toISOString() }),
       ...(sent.error ? { error: sent.error } : {}),
     }
   }
 
   /**
-   * Wait for the woken agent's final answer in the background, deliver it,
-   * and save the result in the run's history. An empty answer or exactly
-   * [SILENT] sends nothing. Left pending when the plugin unloads, for the next
-   * copy to finish (see resumeDeliveries).
+   * Deliver a pending result in the background and save the outcome in the
+   * run's history: a message kept with the delivery (a command's output, a
+   * failure note), or else the woken agent's final answer once its turn
+   * ends. An empty answer or exactly [SILENT] sends nothing. A service that
+   * is not running is waited for (see deliver.js sendMessage). Left pending
+   * when the plugin unloads, for the next copy to finish (see
+   * resumeDeliveries).
    */
   watchDelivery(sessionId, runId, pending) {
     const { job, logger } = this
     const target = { via: pending.via, to: pending.to ?? '' }
     const save = delivery => this.history.update(jobKey(job), runId, { delivery })
     const logEntry = delivery => this.record({
-      time: this.now().toISOString(), job: job.name, event: 'delivery', sessionId,
+      time: this.now().toISOString(), job: job.name, event: 'delivery', ...(sessionId ? { sessionId } : {}),
       status: delivery.status, via: target.via, to: target.to, ...(delivery.error ? { error: delivery.error } : {}),
     })
+    // Shown on the page and in the run log while the service is missing.
+    const onWait = (error) => {
+      logger.warn('[%s] %s; waiting for it to deliver the result', job.name, error)
+      save({ ...pending, error }).then(() => logEntry({ status: 'waiting', error })).catch(() => {})
+    }
+    const send = async (message) => {
+      const delivery = await this.deliverMessage(target, message, { sessionId, onWait })
+      // Unloading: the next copy of the plugin sends it.
+      if (delivery.status === 'pending') {
+        await logEntry({ status: 'pending', error: `${delivery.error}; left for the next start` })
+        return undefined
+      }
+      return delivery
+    }
     const watch = (async () => {
-      if (this.answer === undefined) return
-      const answer = await this.answer(sessionId, pending.messageId, { signal: this.signal })
-      if ('pending' in answer || this.signal?.aborted) return
-      if ('text' in answer) await this.checks?.recheck(pending.messageId, answer.text, { sessionId, signal: this.signal })
-      this.checks?.forget(pending.messageId)
       let delivery
-      if ('error' in answer) {
-        delivery = { status: 'failed', ...target, at: this.now().toISOString(), error: answer.error }
-        logger.warn('[%s] no answer to deliver from session %s: %s', job.name, sessionId, answer.error)
+      if (pending.message !== undefined) {
+        delivery = await send(pending.message)
       } else {
-        const message = messageFromText(answer.text, agentSettings(job, this.defaults).cwd)
-        if (message === undefined) {
-          delivery = { status: 'silent', ...target, at: this.now().toISOString(), ...(answer.reason && answer.reason !== 'completed' ? { error: `turn ended: ${answer.reason}` } : {}) }
-          logger.info('[%s] nothing to deliver from session %s', job.name, sessionId)
+        if (this.answer === undefined) return
+        const answer = await this.answer(sessionId, pending.messageId, { signal: this.signal })
+        if ('pending' in answer || this.signal?.aborted) return
+        if ('text' in answer) await this.checks?.recheck(pending.messageId, answer.text, { sessionId, signal: this.signal })
+        this.checks?.forget(pending.messageId)
+        if ('error' in answer) {
+          delivery = { status: 'failed', ...target, at: this.now().toISOString(), error: answer.error }
+          logger.warn('[%s] no answer to deliver from session %s: %s', job.name, sessionId, answer.error)
         } else {
-          delivery = await this.deliverMessage(target, message, { sessionId })
+          const message = messageFromText(answer.text, agentSettings(job, this.defaults).cwd)
+          if (message === undefined) {
+            delivery = { status: 'silent', ...target, at: this.now().toISOString(), ...(answer.reason && answer.reason !== 'completed' ? { error: `turn ended: ${answer.reason}` } : {}) }
+            logger.info('[%s] nothing to deliver from session %s', job.name, sessionId)
+          } else {
+            delivery = await send(message)
+          }
         }
       }
+      if (delivery === undefined) return
       await save(delivery)
       await logEntry(delivery)
     })().catch((error) => {
@@ -311,7 +348,10 @@ export class JobRunner {
   /** After a restart or reload: finish deliveries an earlier copy of the plugin left pending. */
   async resumeDeliveries() {
     for (const run of this.history.runs(jobKey(this.job))) {
-      if (run.delivery?.status === 'pending' && run.sessionId && run.delivery.messageId) {
+      if (run.delivery?.status !== 'pending') continue
+      if (run.delivery.message !== undefined) {
+        this.watchDelivery(run.sessionId, run.id, run.delivery)
+      } else if (run.sessionId && run.delivery.messageId) {
         // The turn may still be running (a plugin reload, a turn that outlived a restart).
         this.expectCheck(run.delivery.messageId)
         this.watchDelivery(run.sessionId, run.id, run.delivery)
