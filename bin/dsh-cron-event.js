@@ -13,7 +13,7 @@ import { enqueueEvent, waitForEventResult } from '../src/spool.js'
 const usage = `Usage: dsh-cron-event <channel> [--data <json> | --data - | --text <text>]
                       [--id <dedupe key>] [--source <label>] [--no-wait] [--timeout <seconds>]
 
-Emits one event on <channel> (dot-separated names, such as mail.sakina or
+Emits one event on <channel> (dot-separated names, such as mail.inbox or
 ci.run.123). Jobs whose on patterns match it run once the events around it are
 gathered (about 30 s). The event is a hint: jobs check the source themselves.
 

@@ -92,7 +92,7 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
 |---|---|
 | `name` | Job name, used in logs and session titles. Must be unique. |
 | `cron` | Cron expression: 5 fields, or 6 with seconds first. Parsed by [croner](https://github.com/hexagon/croner), which handles daylight-saving changes like Vixie cron: a fixed time skipped by a spring forward runs at the first valid time after the gap, a fixed time repeated by a fall back runs once, and patterns with several hours, minutes or seconds run on both repeated occurrences. Set exactly one of `cron`, `rrule` and `at`, or none when the job has `on`. |
-| `on` | Event channel patterns that start a run, such as `[mail.sakina, alerts.*]`. See [Events](#events). |
+| `on` | Event channel patterns that start a run, such as `[mail.inbox, alerts.*]`. See [Events](#events). |
 | `rrule` | RFC 5545 schedule: a `DTSTART` line and an `RRULE` line. The time zone comes from `DTSTART` (`TZID=...`, or `Z` for UTC). See [Schedules](#schedules). |
 | `at` | Run once at this time: ISO 8601 with an offset, or a local date-time read in `timeZone`. |
 | `timeZone` | IANA time zone for the cron expression or an `at` without offset. The Host's zone when empty. |
@@ -181,6 +181,16 @@ Use it for checks that are cheap to script and costly to miss, such as the answe
 
 It works on DSH's `agent/turn-stopping` hook: a listener that steers a message there makes the agent loop run one more step in the same turn.
 
+### Who sent a prompt
+
+Every prompt a job puts into a session has the source kind `schedule`, which the Web GUI shows as a scheduled run, and names the job as `principal`, the field DSH uses for the caller behind a user message:
+
+```js
+{ kind: 'cron-job', channel: 'cron', id, name, trigger, events }
+```
+
+`id` is the job's id (its name for a config job), `name` its name, `trigger` what started the run (`schedule`, `manual`, `event`, `rerun`, or `answer-check` for an answer check's rewrite request), and `events` the channels of the events that started an event run. Scripts that read session logs can tell job prompts apart, and which job sent each, without parsing the text.
+
 ### Delivery channels
 
 A delivery target is `{ via, to }`: `via` names a DSH service, `to` is an address that service understands (a chat topic, a mailbox, a webhook name; it can be empty). When a result is ready, the plugin looks the service up by name with `ctx.get(via)` and calls:
@@ -192,6 +202,7 @@ await service.send({
   files,        // string[]: absolute file paths
   from: {
     job,        // string: the job's name
+    jobId,      // string: the job's id (its name for a config job)
     sessionId,  // string, agent and gated jobs only: the session that wrote the answer
   },
 })

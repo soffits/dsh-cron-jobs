@@ -49,7 +49,7 @@ export function toolSchemas(prefix) {
     on: {
       type: 'array',
       items: { type: 'string' },
-      description: `Event channels that start a run, with * for any characters (mail.sakina, ci.*, dsh.started). Events come from \`dsh-cron-event <channel>\` (any script or hook), from watchers (${prefix}_watch), and dsh.started once after each DSH start. Events within about 30 s run the job once; the command gets them as JSON on stdin and the prompt gets them appended as untrusted data. A job with on may leave out the schedule; keep a slower one as a safety net when events can be missed.`,
+      description: `Event channels that start a run, with * for any characters (mail.inbox, ci.*, dsh.started). Events come from \`dsh-cron-event <channel>\` (any script or hook), from watchers (${prefix}_watch), and dsh.started once after each DSH start. Events within about 30 s run the job once; the command gets them as JSON on stdin and the prompt gets them appended as untrusted data. A job with on may leave out the schedule; keep a slower one as a safety net when events can be missed.`,
     },
     once: { type: 'boolean', description: 'End the job after its first run that was not started by hand (an event or a scheduled run). With on: dsh.started, it waits for the next DSH start.' },
   }
@@ -75,7 +75,7 @@ export function toolSchemas(prefix) {
     watch: object({
       action: { type: 'string', enum: ['create', 'delete', 'list'], description: 'create starts a new watcher; delete stops and removes one; list shows every watcher with its state.' },
       id: { type: 'string', description: 'Watcher id: letters, digits, _ . - (create, delete).' },
-      channel: { type: 'string', description: 'Channel its output lines are emitted on, such as mail.sakina (create).' },
+      channel: { type: 'string', description: 'Channel its output lines are emitted on, such as mail.inbox (create).' },
       command: { type: 'string', description: 'Shell command run with bash that keeps running and prints one line per change (create). A JSON object line is the event\'s data (its "id" field dedupes), any other line its text; {"wakeAgent": false} lines are ignored. It is restarted with backoff when it exits; down for 15 minutes sends one alert. It gets DSH_CRON_STATE_DIR, a directory for its cursor, so it can catch up after a restart.' },
       cwd: { type: 'string', description: 'Working directory; defaults to this session\'s (create).' },
       once: { type: 'boolean', description: 'Run the command one time and remove the watcher when it exits, for a one-off wait such as `gh run watch 123 --exit-status >/dev/null; echo "{\\"exit\\": $?}"` (create).' },

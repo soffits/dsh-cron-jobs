@@ -4,7 +4,7 @@
  * job reads the truth from its source, so a lost or forged event costs at
  * most one missed or wasted run (the job's schedule is the safety net).
  *
- * - Channels are dot-separated names such as `mail.sakina` or `dsh.started`.
+ * - Channels are dot-separated names such as `mail.inbox` or `dsh.started`.
  * - A job's `on` lists channel patterns; `*` matches one or more characters
  *   of any kind, dots included (`mail.*` matches `mail.icloud.inbox`).
  * - An event may carry a dedupe key: a second event with the same channel and

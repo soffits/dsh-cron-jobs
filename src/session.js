@@ -24,6 +24,7 @@ import { finalAnswer } from './deliver.js'
  * @param {object} request
  * @param {string} request.text - Message text.
  * @param {string} [request.messageId] - Id of the message, so its answer can be found later.
+ * @param {object} [request.principal] - Who sends the message, recorded on its source.
  * @param {string} request.title - Session title.
  * @param {string} [request.agentPreset] - Agent preset id; the host default when omitted.
  * @param {string} [request.cwd] - Session directory; the host default when omitted.
@@ -31,7 +32,7 @@ import { finalAnswer } from './deliver.js'
  * @param {{ warn: Function }} logger
  * @returns {Promise<string>} The new session id.
  */
-export async function openAgentSession(ctx, { text, messageId, title, agentPreset, cwd, model }, logger) {
+export async function openAgentSession(ctx, { text, messageId, principal, title, agentPreset, cwd, model }, logger) {
   const controller = ctx.get('sessionController')
   const sessions = ctx.get('sessions')
   if (controller === undefined || sessions === undefined) {
@@ -51,7 +52,7 @@ export async function openAgentSession(ctx, { text, messageId, title, agentPrese
     await joinWorkspace(ctx, sessionId, cwd, logger)
     nameSession(ctx, agent, title, logger)
 
-    agent.followup(userMessage(text, messageId))
+    agent.followup(userMessage(text, messageId, principal))
     if (!await sessions.flush(agent.session)) {
       throw new Error('session persistence did not acknowledge the message')
     }
@@ -83,12 +84,13 @@ export async function openAgentSession(ctx, { text, messageId, title, agentPrese
  * @param {string} request.sessionId
  * @param {string} request.text
  * @param {string} [request.messageId] - Id of the message, so its answer can be found later.
+ * @param {object} [request.principal] - Who sends the message, recorded on its source.
  * @param {boolean} [request.mayUnarchive]
  * @param {boolean} [request.ignoreHold] - Deliver even to a pinned session or one a person uses.
  * @returns {Promise<{ sessionId: string, queued: boolean, unarchived: boolean }>}
  *   `queued`: the session was busy and the message waits for its next turn.
  */
-export async function deliverToSession(ctx, { sessionId, text, messageId, mayUnarchive = false, ignoreHold = false }) {
+export async function deliverToSession(ctx, { sessionId, text, messageId, principal, mayUnarchive = false, ignoreHold = false }) {
   const controller = ctx.get('sessionController')
   const sessions = ctx.get('sessions')
   if (controller === undefined || sessions === undefined) {
@@ -107,7 +109,7 @@ export async function deliverToSession(ctx, { sessionId, text, messageId, mayUna
       await registry.unarchiveSession(sessionId)
     }
     const queued = agent.status !== undefined && agent.status !== 'idle'
-    agent.followup(userMessage(text, messageId))
+    agent.followup(userMessage(text, messageId, principal))
     if (!await sessions.flush(agent.session)) {
       throw new Error('session persistence did not acknowledge the message')
     }
@@ -283,14 +285,19 @@ function describe(error) {
 
 /**
  * A user-role message from a scheduled source. `kind: 'schedule'` makes the
- * Web GUI show it as a scheduled run.
+ * Web GUI show it as a scheduled run. `principal`, DSH's field for the caller
+ * behind a user message, names the job that sent it (see
+ * `JobRunner.promptPrincipal`), so session readers need not parse the text.
+ * @param {string} text
+ * @param {string} [id]
+ * @param {object} [principal]
  */
-export function userMessage(text, id = randomUUID()) {
+export function userMessage(text, id = randomUUID(), principal) {
   return deepFreeze({
     id,
     role: 'user',
     content: [{ type: 'text', text }],
-    source: { kind: 'schedule' },
+    source: { kind: 'schedule', ...(principal ? { principal: { ...principal } } : {}) },
   })
 }
 

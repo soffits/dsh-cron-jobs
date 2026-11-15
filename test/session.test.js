@@ -106,6 +106,15 @@ test('messages are frozen and get fresh ids', () => {
   const b = userMessage('a')
   assert.notEqual(a.id, b.id)
   assert.ok(Object.isFrozen(a) && Object.isFrozen(a.content[0]))
+  assert.deepEqual(a.source, { kind: 'schedule' })
+})
+
+test('a message names the job that sent it as its source principal', () => {
+  const principal = { kind: 'cron-job', channel: 'cron', id: 'job-1', name: 'Check-in', trigger: 'schedule' }
+  const message = userMessage('hi', 'm1', principal)
+  assert.deepEqual(message.source, { kind: 'schedule', principal })
+  assert.notEqual(message.source.principal, principal, 'a copy, so freezing it leaves the caller\'s object alone')
+  assert.ok(Object.isFrozen(message.source.principal))
 })
 
 function existingHost({ status = 'idle', archived = [], pinned = [], log = [], resolveError, whenIdle, archiveImpl } = {}) {

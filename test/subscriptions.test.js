@@ -43,7 +43,7 @@ test('a job with on and no schedule runs on a matching event, with the events on
 
   let released = 0
   assert.deepEqual(controller.emit({ channel: 'calendar.x' }), { matched: [] })
-  assert.deepEqual(controller.emit({ channel: 'mail.sakina', data: { state: 's2' } }, () => released++), { matched: [job.id] })
+  assert.deepEqual(controller.emit({ channel: 'mail.inbox', data: { state: 's2' } }, () => released++), { matched: [job.id] })
   await tick()
   assert.equal(released, 1)
   assert.equal(runs.length, 1)
@@ -55,9 +55,10 @@ test('a job with on and no schedule runs on a matching event, with the events on
   assert.equal(wakes.length, 1)
   assert.match(wakes[0].text, /Events that started this run/)
   assert.match(wakes[0].text, /"state":"s2"/)
+  assert.deepEqual(wakes[0].principal, { kind: 'cron-job', channel: 'cron', id: job.id, name: 'Mail', trigger: 'event', events: ['mail.inbox'] })
   const [run] = history.runs(job.id)
   assert.equal(run.trigger, 'event')
-  assert.deepEqual(run.events, { count: 1, channels: ['mail.sakina'] })
+  assert.deepEqual(run.events, { count: 1, channels: ['mail.inbox'] })
 })
 
 test('scheduled runs get no stdin but know their trigger', async () => {
@@ -118,9 +119,9 @@ test('editing: on can replace the schedule, an empty cron removes it, and a job 
   const { controller } = setup()
   const job = await controller.create({ ...base, title: 'Mail', prompt: 'Read.', schedule: { cron: '*/15 * * * *', timeZone: 'UTC' } })
   await assert.rejects(controller.update(job.id, { schedule: { cron: '' } }), (error) => error instanceof JobInputError && /schedule, on/.test(error.message))
-  let view = await controller.update(job.id, { on: ['mail.sakina'], schedule: { cron: '0 */2 * * *', timeZone: 'America/Toronto' } })
+  let view = await controller.update(job.id, { on: ['mail.inbox'], schedule: { cron: '0 */2 * * *', timeZone: 'America/Toronto' } })
   assert.equal(view.schedule.expression, '0 */2 * * *')
-  assert.deepEqual(view.on, ['mail.sakina'])
+  assert.deepEqual(view.on, ['mail.inbox'])
   view = await controller.update(job.id, { schedule: { cron: '' } })
   assert.equal(view.schedule, null)
   assert.equal(view.state, 'active')

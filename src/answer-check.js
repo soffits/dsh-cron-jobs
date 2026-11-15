@@ -67,7 +67,7 @@ export function checkable(text) {
  * @param {() => Date} [deps.now]
  */
 export function createAnswerChecks({ run, logger, record = async () => {}, now = () => new Date() }) {
-  /** @type {Map<string, { job: string, command: string, cwd?: string, at: number, steered: boolean, verdict?: string }>} */
+  /** @type {Map<string, { job: string, jobId?: string, command: string, cwd?: string, at: number, steered: boolean, verdict?: string }>} */
   const pending = new Map()
 
   async function check(entry, text, signal) {
@@ -80,12 +80,12 @@ export function createAnswerChecks({ run, logger, record = async () => {}, now =
     /**
      * Check the answer to this prompt before its turn closes.
      * @param {string} messageId
-     * @param {{ job: string, command: string, cwd?: string }} options
+     * @param {{ job: string, jobId?: string, command: string, cwd?: string }} options
      */
-    expect(messageId, { job, command, cwd }) {
+    expect(messageId, { job, jobId, command, cwd }) {
       const at = now().getTime()
       for (const [id, entry] of pending) if (at - entry.at > ANSWER_CHECK_TTL_MS) pending.delete(id)
-      pending.set(messageId, { job, command, ...(cwd ? { cwd } : {}), at, steered: false })
+      pending.set(messageId, { job, ...(jobId ? { jobId } : {}), command, ...(cwd ? { cwd } : {}), at, steered: false })
     },
 
     /** Stop watching a prompt; returns what its check did ('steered', 'passed', 'error' or undefined). */
@@ -130,7 +130,7 @@ export function createAnswerChecks({ run, logger, record = async () => {}, now =
           entry.verdict = 'steered'
           logger.info('[%s] answer check asked for a rewrite', entry.job)
           await record({ ...line, status: 'steered', request: outcome.request })
-          agent.steer(userMessage(outcome.request, randomUUID()))
+          agent.steer(userMessage(outcome.request, randomUUID(), { kind: 'cron-job', channel: 'cron', id: entry.jobId ?? entry.job, name: entry.job, trigger: 'answer-check' }))
         }
         return
       }
