@@ -64,6 +64,20 @@ export function toolSchemas(prefix) {
     required: [],
     additionalProperties: false,
   }
+  const replacements = field => ({
+    type: 'array',
+    description: `Change the ${field} in place instead of resending it: literal {old, new} replacements applied in order. Each old must match exactly once, or set replace_all. Not with ${field}.`,
+    items: {
+      type: 'object',
+      properties: {
+        old: { type: 'string', description: 'Exact text to find.' },
+        new: { type: 'string', description: 'Replacement text; empty deletes the match.' },
+        replace_all: { type: 'boolean', description: 'Replace every match, not only a single one.' },
+      },
+      required: ['old', 'new'],
+      additionalProperties: false,
+    },
+  })
   return {
     create: object({
       title: { type: 'string', description: 'Job name in the user\'s language, at most 200 characters: action plus object, without timing or status.' },
@@ -90,6 +104,8 @@ export function toolSchemas(prefix) {
       title: { type: 'string', description: 'New job name.' },
       prompt: { ...fields.prompt, description: 'New prompt; an empty string removes it.' },
       command: { ...fields.command, description: 'New command; an empty string removes it.' },
+      prompt_replace: replacements('prompt'),
+      command_replace: replacements('command'),
       answerCheck: { ...fields.answerCheck, description: 'New answer check command; an empty string removes it.' },
       cron: { ...schedule.cron, description: `${schedule.cron.description} An empty cron, rrule or at removes the schedule of a job with on.` },
       rrule: schedule.rrule,
@@ -161,7 +177,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
       `Update, pause, resume or delete one job created with ${prefix}_create, by id. Jobs from the plugin config are read-only.`,
       async (args, jobs, agent) => {
         const { id, action } = args
-        const changes = ['title', 'prompt', 'command', 'answerCheck', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver', 'model', 'on', 'once'].filter(key => args[key] !== undefined)
+        const changes = ['title', 'prompt', 'command', 'prompt_replace', 'command_replace', 'answerCheck', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver', 'model', 'on', 'once'].filter(key => args[key] !== undefined)
         if (action !== 'update' && changes.length > 0) return failure('invalid_arguments', `${action} takes only id and action.`)
         if (action === 'delete') return await jobs.remove(id)
         if (action === 'pause' || action === 'resume') {
@@ -171,6 +187,16 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
           return modelJob(result.job)
         }
         if (changes.length === 0) return failure('invalid_arguments', 'update needs at least one field to change.')
+        for (const [field, list] of [['prompt', args.prompt_replace], ['command', args.command_replace]]) {
+          if (list === undefined) continue
+          if (list.length === 0) return failure('invalid_arguments', `${field}_replace needs at least one replacement.`)
+          if (args[field] !== undefined) return failure('invalid_arguments', `give either ${field} or ${field}_replace, not both.`)
+          const current = jobs.storedEntry(id).record[field]
+          if (current === undefined) return failure('invalid_arguments', `The job has no ${field} to change.`)
+          const replaced = applyReplacements(current, list, `${field}_replace`)
+          if (replaced.error) return failure('invalid_arguments', replaced.error)
+          args = { ...args, [field]: replaced.text }
+        }
         const scheduleGiven = ['cron', 'rrule', 'at', 'timeZone'].some(key => args[key] !== undefined)
         const targetGiven = args.target !== undefined || args.sessionId !== undefined
         return modelJob(await jobs.update(id, {
@@ -247,6 +273,25 @@ function parseDeliver(ctx, value) {
   const service = ctx?.get?.(via)
   if (typeof service?.send !== 'function') throw codeError('invalid_deliver', `No running service ${JSON.stringify(via)} can deliver messages.`)
   return { via, to }
+}
+
+/**
+ * Apply literal {old, new, replace_all} replacements in order, each to the
+ * result of the one before. Without replace_all an `old` must match exactly
+ * once. All or nothing: returns `{ text }`, or `{ error }` naming the item.
+ */
+export function applyReplacements(source, list, label) {
+  let text = source
+  for (const [index, { old, new: replacement, replace_all: all }] of list.entries()) {
+    const where = `${label}[${index}] (old ${JSON.stringify(old.length > 50 ? `${old.slice(0, 50)}…` : old)})`
+    if (old === '') return { error: `${where}: old must not be empty. Nothing was changed.` }
+    const parts = text.split(old)
+    const count = parts.length - 1
+    if (count === 0) return { error: `${where}: no match${index > 0 ? ' in the text after the earlier replacements' : ''}. Nothing was changed.` }
+    if (count > 1 && all !== true) return { error: `${where}: matches ${count} times; add surrounding text to make it unique or set replace_all. Nothing was changed.` }
+    text = parts.join(replacement)
+  }
+  return { text }
 }
 
 /** The model argument for the controller: undefined or null when it names no model (clears it on edit). */
@@ -354,7 +399,13 @@ export function checkArgs(schema, args) {
     if (value === undefined) continue
     if (property.type === 'array') {
       if (!Array.isArray(value)) return `${key} must be an array`
-      if (value.some(item => typeof item !== property.items.type)) return `${key} must hold only ${property.items.type}s`
+      if (value.some(item => typeof item !== property.items.type || (property.items.type === 'object' && (item === null || Array.isArray(item))))) return `${key} must hold only ${property.items.type}s`
+      if (property.items.type === 'object') {
+        for (const [index, item] of value.entries()) {
+          const inner = checkArgs(property.items, item)
+          if (inner) return `${key}[${index}]: ${inner}`
+        }
+      }
       continue
     }
     if (property.type === 'object') {

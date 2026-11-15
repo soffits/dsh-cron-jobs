@@ -301,7 +301,7 @@ The `cron-jobs-tools` row registers five tools. Their names start with `cron_job
 | Tool | What it does |
 |---|---|
 | `cron_job_create` | Create a job: a title, a prompt and/or a command, one of `cron`, `rrule` and `at` (with `timeZone` where needed) and/or `on` (event channels), where the prompt goes, and optionally `once`, where the result is delivered and which model its sessions use. |
-| `cron_job_edit` | `update` the given fields, `pause`, `resume` (continues from now), or `delete` a job by id. An empty `cron`, `rrule` or `at` removes the schedule of a job with `on`; an empty `on` removes its subscriptions. |
+| `cron_job_edit` | `update` the given fields, `pause`, `resume` (continues from now), or `delete` a job by id. An empty `cron`, `rrule` or `at` removes the schedule of a job with `on`; an empty `on` removes its subscriptions. `prompt_replace` and `command_replace` change the text in place; see below. |
 | `cron_job_list` | Every job, from the config and from tools, with its id, state, schedule, next run, target and last run. |
 | `cron_job_view` | One job's full definition and its five latest runs. |
 | `cron_job_watch` | `create`, `delete` or `list` [watchers](#watchers). |
@@ -315,6 +315,8 @@ Where the prompt goes (`target`):
 - `this_session`: the session that created the job, for reminders and follow-ups to the conversation. `sessionId` names another existing session instead.
 
 `deliver` takes `<service>:<address>` (such as `telegramTopics:notify`) or `none`; the service must be running when the job is created. Left out, the job uses the row's default target, or delivers nothing when its prompt goes to an existing session. On `cron_job_edit`, an empty `deliver` goes back to the default.
+
+`prompt_replace` and `command_replace` on `cron_job_edit` change a long prompt or command without resending it: a list of literal `{ "old": "...", "new": "...", "replace_all": false }` replacements, applied in order, each to the result of the one before. Every `old` must match exactly once unless that item sets `replace_all`; otherwise the call fails naming the item (`prompt_replace[1] (old "..."): no match` or `matches 3 times`) and changes nothing. They cannot be combined with `prompt` or `command`.
 
 `answerCheck` sets the job's [answer check](#answer-checks) command; on `cron_job_edit`, an empty string removes it.
 

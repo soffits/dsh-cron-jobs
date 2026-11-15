@@ -204,3 +204,44 @@ test('the watch tool creates, lists and deletes stored watchers', async () => {
   assert.equal((await call('watch', { action: 'delete', id: 'once-1' })).code, 'not_found')
   await controller.stop()
 })
+
+test('edit prompt_replace and command_replace change text in place, all or nothing', async () => {
+  const { call } = setup({ jobs: [{ name: 'cfg', cron: '* * * * *', command: 'true' }] })
+  const job = await call('create', { title: 'Replace', prompt: 'Check the mail. Then check the mail again. Cost: $5.', command: 'probe --a --b', cron: '0 9 * * *', timeZone: 'America/Toronto' })
+  const view = async () => call('view', { id: job.id })
+
+  const first = await call('edit', { id: job.id, action: 'update', prompt_replace: [
+    { old: 'Then', new: 'After that,' },
+    { old: 'check the mail', new: 'read mail', replace_all: true },
+    { old: '$5', new: '$&' },
+  ] })
+  assert.equal(first.prompt, 'Check the mail. After that, read mail again. Cost: $&.')
+  assert.equal(first.command, 'probe --a --b')
+
+  assert.equal((await call('edit', { id: job.id, action: 'update', command_replace: [{ old: '--b', new: '' }] })).command, 'probe --a ')
+
+  // each replacement sees the result of the one before
+  const chained = await call('edit', { id: job.id, action: 'update', prompt_replace: [{ old: 'read mail', new: 'read inbox' }, { old: 'read inbox again', new: 'read inbox twice' }] })
+  assert.match(chained.prompt, /After that, read inbox twice\./)
+
+  // errors name the failing item and leave the job untouched
+  const before = (await view()).prompt
+  const missing = await call('edit', { id: job.id, action: 'update', prompt_replace: [{ old: 'Check', new: 'Look' }, { old: 'nowhere', new: 'x' }] })
+  assert.equal(missing.code, 'invalid_arguments')
+  assert.match(missing.message, /prompt_replace\[1\] \(old "nowhere"\): no match/)
+  const many = await call('edit', { id: job.id, action: 'update', prompt_replace: [{ old: 'e', new: 'E' }] })
+  assert.match(many.message, /prompt_replace\[0\].*matches \d+ times/)
+  assert.match((await call('edit', { id: job.id, action: 'update', prompt_replace: [{ old: '', new: 'x' }] })).message, /old must not be empty/)
+  assert.match((await call('edit', { id: job.id, action: 'update', prompt_replace: [{ old: 'Check', new: 'x' }], prompt: 'whole' })).message, /either prompt or prompt_replace/)
+  assert.equal((await call('edit', { id: job.id, action: 'pause', prompt_replace: [{ old: 'a', new: 'b' }] })).code, 'invalid_arguments')
+  assert.equal((await view()).prompt, before)
+
+  // malformed items and jobs without the field
+  assert.equal((await call('edit', { id: job.id, action: 'update', prompt_replace: [{ old: 'a' }] })).code, 'invalid_arguments')
+  assert.equal((await call('edit', { id: job.id, action: 'update', prompt_replace: ['a'] })).code, 'invalid_arguments')
+  assert.equal((await call('edit', { id: job.id, action: 'update', prompt_replace: [] })).code, 'invalid_arguments')
+  const bare = await call('create', { title: 'Bare', command: 'true', cron: '0 9 * * *', timeZone: 'America/Toronto' })
+  assert.match((await call('edit', { id: bare.id, action: 'update', prompt_replace: [{ old: 'a', new: 'b' }] })).message, /no prompt to change/)
+  assert.equal((await call('edit', { id: 'cfg', action: 'update', prompt_replace: [{ old: 'a', new: 'b' }] })).code, 'read_only')
+  assert.equal((await call('edit', { id: 'nope', action: 'update', command_replace: [{ old: 'a', new: 'b' }] })).code, 'not_found')
+})
