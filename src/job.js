@@ -284,7 +284,7 @@ export class JobRunner {
    */
   async deliverMessage(target, message, { sessionId, waitMs, onWait }) {
     const { job, logger } = this
-    const sent = await this.send(target, message, { job: job.name, ...(sessionId ? { sessionId } : {}) }, {
+    const sent = await this.send(target, message, { job: job.name, jobId: jobKey(job), ...(sessionId ? { sessionId } : {}) }, {
       ...(waitMs !== undefined ? { waitMs } : {}), ...(onWait ? { onWait } : {}),
     })
     const where = describeTarget(target)
@@ -539,12 +539,29 @@ export class JobRunner {
     return sent.status === 'woke' ? { ...sent, messageId } : sent
   }
 
+  /**
+   * Who sends this run's prompt, recorded as `source.principal` on it: the
+   * job, what started the run, and the event channels of an event run.
+   * @returns {{ kind: 'cron-job', channel: 'cron', id: string, name: string, trigger: string, events?: string[] }}
+   */
+  promptPrincipal() {
+    const { job, current } = this
+    return {
+      kind: 'cron-job',
+      channel: 'cron',
+      id: jobKey(job),
+      name: job.name,
+      trigger: current?.rerunOf ? 'rerun' : current?.trigger ?? 'schedule',
+      ...(current?.events?.channels?.length ? { events: [...current.events.channels] } : {}),
+    }
+  }
+
   /** Have the answer to this prompt checked before its turn closes, when the job names a check. */
   expectCheck(messageId) {
     const command = this.job.agent?.answerCheck
     if (!command || this.checks === undefined) return
     const cwd = agentSettings(this.job, this.defaults).cwd
-    this.checks.expect(messageId, { job: this.job.name, command, ...(cwd ? { cwd } : {}) })
+    this.checks.expect(messageId, { job: this.job.name, jobId: jobKey(this.job), command, ...(cwd ? { cwd } : {}) })
   }
 
   /** Send the prompt to the target session, a reused one, or a new one. */
@@ -564,7 +581,7 @@ export class JobRunner {
     if (previous !== undefined) {
       try {
         const sent = await this.withSessionLock(previous.sessionId, async () => {
-          const delivered = await this.reuse({ sessionId: previous.sessionId, text, messageId, mayUnarchive: settings.autoArchive })
+          const delivered = await this.reuse({ sessionId: previous.sessionId, text, messageId, principal: this.promptPrincipal(), mayUnarchive: settings.autoArchive })
           // Inside the lock, so an earlier run's archive wait sees it was superseded.
           this.latestRun.set(previous.sessionId, null)
           return delivered
@@ -587,6 +604,7 @@ export class JobRunner {
       const opened = await this.wake({
         text,
         messageId,
+        principal: this.promptPrincipal(),
         title: sessionTitle(job.name, localTime),
         ...(job.agent.preset ? { agentPreset: job.agent.preset } : {}),
         ...(agentModel(job) ? { model: agentModel(job) } : {}),
@@ -631,7 +649,7 @@ export class JobRunner {
     if (this.reuse === undefined) return { status: 'wake-failed', error: 'this host cannot deliver to existing sessions' }
     try {
       const sent = await this.withSessionLock(sessionId, async () => {
-        const delivered = await this.reuse({ sessionId, text, messageId, mayUnarchive, ignoreHold })
+        const delivered = await this.reuse({ sessionId, text, messageId, principal: this.promptPrincipal(), mayUnarchive, ignoreHold })
         this.latestRun.set(sessionId, null)
         return delivered
       })

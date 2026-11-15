@@ -34,7 +34,7 @@ const Job = z.object({
   rrule: z.string().role('textarea').description('RFC 5545 schedule: a DTSTART line and an RRULE line, such as "DTSTART;TZID=Europe/Berlin:20260901T080000" and "RRULE:FREQ=WEEKLY;BYDAY=MO". The zone comes from DTSTART.'),
   at: z.string().description('Run once at this time: ISO 8601 with an offset, or a local date-time read in timeZone.'),
   timeZone: z.string().description('IANA time zone for the cron expression or an at without offset, such as Europe/Berlin. The host zone when empty (an at without offset needs it).'),
-  on: z.array(z.string()).default([]).description('Event channels that start a run, such as mail.sakina or alerts.* (* matches any characters). Events arriving close together run the job once; the gate command gets them as JSON on stdin and the prompt gets them appended. Keep a slower schedule as a safety net.'),
+  on: z.array(z.string()).default([]).description('Event channels that start a run, such as mail.inbox or alerts.* (* matches any characters). Events arriving close together run the job once; the gate command gets them as JSON on stdin and the prompt gets them appended. Keep a slower schedule as a safety net.'),
   command: z.string().role('textarea').description('Shell command, run with bash (or sh when bash is missing). Leave empty for an agent-only job, which sends agent.prompt at every run.'),
   cwd: z.string().description('Working directory of the command. The host process directory when empty.'),
   timeoutSeconds: z.natural().default(DEFAULT_TIMEOUT_SECONDS)
@@ -46,7 +46,7 @@ const Job = z.object({
 
 const Watcher = z.object({
   id: z.string().required().description('Watcher id (letters, digits, _ . -), shown in logs and alerts.'),
-  channel: z.string().required().description('Channel each output line is emitted on, such as mail.sakina.'),
+  channel: z.string().required().description('Channel each output line is emitted on, such as mail.inbox.'),
   command: z.string().role('textarea').required().description('Long-running shell command, run with bash. Each stdout line is an event: a JSON object line is its data, any other line its text; {"wakeAgent": false} lines are ignored. It is restarted with backoff when it exits.'),
   cwd: z.string().description('Working directory. The host process directory when empty.'),
   enabled: z.boolean().default(true).description('Run this watcher.'),

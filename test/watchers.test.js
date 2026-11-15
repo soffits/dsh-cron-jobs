@@ -19,7 +19,7 @@ async function until(check, ms = 5000) {
 }
 
 test('watcher lines become events: JSON objects are data, others text, wakeAgent false ignored', () => {
-  assert.deepEqual(lineEvent('{"id":"s5","state":"s5"}', 'mail.sakina', 'watcher:m'), { channel: 'mail.sakina', data: { id: 's5', state: 's5' }, source: 'watcher:m', key: 's5' })
+  assert.deepEqual(lineEvent('{"id":"s5","state":"s5"}', 'mail.inbox', 'watcher:m'), { channel: 'mail.inbox', data: { id: 's5', state: 's5' }, source: 'watcher:m', key: 's5' })
   assert.deepEqual(lineEvent('new mail', 'c', 'w'), { channel: 'c', text: 'new mail', source: 'w' })
   assert.deepEqual(lineEvent('[1,2]', 'c', 'w'), { channel: 'c', data: [1, 2], source: 'w' })
   assert.equal(lineEvent('{"wakeAgent": false}', 'c', 'w'), undefined)

@@ -114,6 +114,7 @@ test('a cut-off turn runs again once, in its own session, and only the rerun\'s 
 
   assert.equal(reuses.length, 1)
   assert.equal(reuses[0].sessionId, 'session-1')
+  assert.equal(reuses[0].principal.trigger, 'rerun')
   assert.equal(reuses[0].mayUnarchive, true)
   assert.equal(reuses[0].ignoreHold, false, 'a session the job opened for itself is left to a person who took it over')
   assert.match(reuses[0].text, /^This is a scheduled message from the user, sent by the cron job "Check-in" \(rerun of the run at /)
