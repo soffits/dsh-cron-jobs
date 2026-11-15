@@ -51,3 +51,7 @@
 ## Checks before a release
 
 `npm test` (its `--import ./test/home.js` points `DSH_HOME` at a temp directory, so tests never touch a real event inbox; keep it when running single files), `npm run check`, then CI on push. The page has no automated test; render it once with stored, config, ended and agent-only jobs before releasing a page change.
+
+## Git
+
+- PR titles are Conventional Commit subjects (`feat: ...`, `fix(scope): ...`), because a squash merge makes the title the commit on the default branch; CI checks it.
