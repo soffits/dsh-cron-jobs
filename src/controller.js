@@ -166,6 +166,7 @@ export class CronJobs {
     if (!(entry.job.on?.length > 0)) return
     entry.batcher = new EventBatcher({
       ...this.eventSettings,
+      ...(entry.job.coalesceSeconds !== undefined ? { coalesceMs: entry.job.coalesceSeconds * 1000 } : {}),
       now: () => this.now().getTime(),
       busy: () => entry.runner.running,
       start: batch => this.runEvents(entry, batch),
@@ -624,6 +625,7 @@ export class CronJobs {
       ...(spec ? { schedule: spec } : {}),
       ...(on.length > 0 ? { on } : {}),
       ...(input.once === true ? { once: true } : {}),
+      ...(input.coalesceSeconds !== undefined ? { coalesceSeconds: coalesceSeconds(input.coalesceSeconds) } : {}),
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(input.preset ? { preset: input.preset } : {}),
       target: input.target ?? { kind: 'new' },
@@ -677,6 +679,10 @@ export class CronJobs {
     if (patch.once !== undefined) {
       if (patch.once) next.once = true
       else delete next.once
+    }
+    if (patch.coalesceSeconds !== undefined) {
+      if (patch.coalesceSeconds === null) delete next.coalesceSeconds
+      else next.coalesceSeconds = coalesceSeconds(patch.coalesceSeconds)
     }
     if (patch.schedule !== undefined) {
       const schedule = changedSchedule(current.schedule, patch.schedule)
@@ -751,6 +757,8 @@ export class CronJobs {
       schedule: spec ? { ...spec, text: describeSchedule(spec) } : null,
       on: job.on?.length > 0 ? job.on : null,
       once: job.once === true,
+      coalesceSeconds: job.coalesceSeconds ?? null,
+      coalesceEffectiveSeconds: job.on?.length > 0 ? (job.coalesceSeconds ?? this.eventSettings.coalesceMs / 1000) : null,
       pendingEvents: entry.batcher?.size > 0 ? { count: entry.batcher.size, dueAt: new Date(entry.batcher.dueAt).toISOString() } : null,
       cron: spec?.kind === 'cron' ? spec.expression : null,
       timeZone: scheduleZone(spec) ?? null,
@@ -845,6 +853,7 @@ function fromStored(record) {
     spec: record.schedule,
     on: record.on ?? [],
     ...(record.once ? { once: true } : {}),
+    ...(record.coalesceSeconds !== undefined ? { coalesceSeconds: record.coalesceSeconds } : {}),
   }
 }
 
@@ -880,6 +889,11 @@ function changedSchedule(current, input) {
 
 function hasSchedule(input) {
   return input !== undefined && ['cron', 'rrule', 'at'].some(key => typeof input[key] === 'string' && input[key].trim() !== '')
+}
+
+function coalesceSeconds(value) {
+  if (!Number.isInteger(value) || value < 0) throw new JobInputError('invalid_job', 'coalesceSeconds must be a whole number of seconds, 0 or more')
+  return value
 }
 
 function patterns(list) {

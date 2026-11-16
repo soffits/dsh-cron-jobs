@@ -52,6 +52,7 @@ export function toolSchemas(prefix) {
       description: `Event channels that start a run, with * for any characters (mail.inbox, ci.*, dsh.started). Events come from \`dsh-cron-event <channel>\` (any script or hook), from watchers (${prefix}_watch), and dsh.started once after each DSH start. Events within about 30 s run the job once; the command gets them as JSON on stdin and the prompt gets them appended as untrusted data. A job with on may leave out the schedule; keep a slower one as a safety net when events can be missed.`,
     },
     once: { type: 'boolean', description: 'End the job after its first run that was not started by hand (an event or a scheduled run). With on: dsh.started, it waits for the next DSH start.' },
+    coalesceSeconds: { type: 'number', description: 'How long events for this job gather, counted from the first one, before it runs once with all of them (for example 900 for a quarter of an hour). 0 runs at once. Left out, the plugin\'s events.coalesceSeconds (30 by default) applies. Only matters with on.' },
   }
   const model = {
     type: 'object',
@@ -118,6 +119,7 @@ export function toolSchemas(prefix) {
       model: { ...model, description: `New model, as in ${prefix}_create. An empty object ({}) returns to the preset's or host default.` },
       on: { ...fields.on, description: `New event channels, as in ${prefix}_create; an empty list removes them.` },
       once: fields.once,
+      coalesceSeconds: { ...fields.coalesceSeconds, description: `New event gathering time in seconds, as in ${prefix}_create. A negative number (-1) removes the job's own setting, so the plugin's default applies again.` },
     }, ['id', 'action']),
     list: object({}, []),
     view: object({ id: { type: 'string', description: 'Job id.' } }, ['id']),
@@ -165,6 +167,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
         schedule: { cron: args.cron, rrule: args.rrule, at: args.at, timeZone: args.timeZone },
         ...(args.on !== undefined ? { on: args.on } : {}),
         ...(args.once !== undefined ? { once: args.once } : {}),
+        ...(args.coalesceSeconds !== undefined ? { coalesceSeconds: args.coalesceSeconds } : {}),
         cwd: args.cwd || callerCwd(agent),
         preset: callerPreset(agent),
         ...(toModel(args.model) ? { model: toModel(args.model) } : {}),
@@ -177,7 +180,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
       `Update, pause, resume or delete one job created with ${prefix}_create, by id. Jobs from the plugin config are read-only.`,
       async (args, jobs, agent) => {
         const { id, action } = args
-        const changes = ['title', 'prompt', 'command', 'prompt_replace', 'command_replace', 'answerCheck', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver', 'model', 'on', 'once'].filter(key => args[key] !== undefined)
+        const changes = ['title', 'prompt', 'command', 'prompt_replace', 'command_replace', 'answerCheck', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver', 'model', 'on', 'once', 'coalesceSeconds'].filter(key => args[key] !== undefined)
         if (action !== 'update' && changes.length > 0) return failure('invalid_arguments', `${action} takes only id and action.`)
         if (action === 'delete') return await jobs.remove(id)
         if (action === 'pause' || action === 'resume') {
@@ -207,6 +210,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
           cwd: args.cwd,
           on: args.on,
           once: args.once,
+          ...(args.coalesceSeconds !== undefined ? { coalesceSeconds: args.coalesceSeconds < 0 ? null : args.coalesceSeconds } : {}),
           ...(args.model !== undefined ? { model: toModel(args.model) ?? null } : {}),
           ...(scheduleGiven ? { schedule: { cron: args.cron, rrule: args.rrule, at: args.at, timeZone: args.timeZone } } : {}),
           ...(targetGiven ? { target: await resolveTarget(ctx, agent, args.target ?? 'new', args.sessionId) } : {}),
@@ -354,6 +358,7 @@ export function modelJob(job, { brief = false } = {}) {
     ...(job.nextRunAt ? { nextRunAt: job.nextRunAt, nextRunAtLocal: `${formatLocalTime(new Date(job.nextRunAt), zone)}${zone ? ` ${zone}` : ''}` } : { nextRunAt: null }),
     ...(job.on ? { on: job.on } : {}),
     ...(job.once ? { once: true } : {}),
+    ...(job.coalesceEffectiveSeconds !== null && job.coalesceEffectiveSeconds !== undefined ? { coalesceSeconds: job.coalesceEffectiveSeconds, ...(job.coalesceSeconds === null ? { coalesceIsDefault: true } : {}) } : {}),
     ...(job.pendingEvents ? { pendingEvents: job.pendingEvents } : {}),
     ...(job.target ? { target: job.target.sessionId ? `${job.target.kind} ${job.target.sessionId}` : job.target.kind } : {}),
     ...(job.agent?.model ? { model: job.agent.model } : {}),

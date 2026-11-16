@@ -40,6 +40,8 @@ export const storedJobSchema = z.object({
   on: z.array(z.string().min(1)).optional(),
   // End the job after its first run that was not started by hand.
   once: z.boolean().optional(),
+  // Seconds events gather before a run; the plugin's events.coalesceSeconds when omitted.
+  coalesceSeconds: z.number().int().min(0).optional(),
   // Directory of the command and of new sessions.
   cwd: z.string().optional(),
   preset: z.string().optional(),

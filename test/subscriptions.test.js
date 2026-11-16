@@ -158,3 +158,69 @@ test('deleting a job releases its waiting events', async () => {
   assert.equal(released, 1)
   await controller.stop()
 })
+
+function slowSetup(events) {
+  const wakes = []
+  const history = new HistoryStore({ table: memoryTable(), logger: quiet })
+  const controller = new CronJobs({
+    jobs: [], logger: quiet, history, now: () => NOW, watchdogMs: 0,
+    events,
+    run: async () => ({ ok: true, exitCode: 0, stdout: 'news\n', stderr: '', durationMs: 1 }),
+    wake: async request => { wakes.push(request); return `s${wakes.length}` },
+  }).start()
+  return { controller, wakes }
+}
+
+test('a job\'s own coalesceSeconds replaces the plugin window, and 0 runs at once', async () => {
+  const { controller, wakes } = slowSetup({ coalesceSeconds: 600, maxRunsPerHour: 0 })
+  const slow = await controller.create({ ...base, title: 'Slow', prompt: 'p', command: 'gate', on: ['a.*'] })
+  const quick = await controller.create({ ...base, title: 'Quick', prompt: 'p', command: 'gate', on: ['b.*'], coalesceSeconds: 0 })
+  const long = await controller.create({ ...base, title: 'Long', prompt: 'p', command: 'gate', on: ['c.*'], coalesceSeconds: 900 })
+  assert.equal(slow.coalesceSeconds, null)
+  assert.equal(slow.coalesceEffectiveSeconds, 600)
+  assert.equal(quick.coalesceSeconds, 0)
+  assert.equal(long.coalesceEffectiveSeconds, 900)
+
+  controller.emit({ channel: 'a.1' })
+  controller.emit({ channel: 'c.1' })
+  controller.emit({ channel: 'c.2' })
+  assert.equal(controller.get(slow.id).pendingEvents.dueAt, new Date(NOW.getTime() + 600_000).toISOString())
+  assert.equal(controller.get(long.id).pendingEvents.dueAt, new Date(NOW.getTime() + 900_000).toISOString())
+  assert.equal(controller.get(long.id).pendingEvents.count, 2)
+  controller.emit({ channel: 'b.1' })
+  await tick()
+  assert.equal(wakes.length, 1)
+  assert.equal(wakes[0].principal.id, quick.id)
+  await controller.stop()
+})
+
+test('coalesceSeconds can be changed, cleared and is checked', async () => {
+  const { controller } = slowSetup({ coalesceSeconds: 30 })
+  const job = await controller.create({ ...base, title: 'Mail', prompt: 'p', command: 'gate', on: ['mail.*'] })
+  assert.equal((await controller.update(job.id, { coalesceSeconds: 900 })).coalesceEffectiveSeconds, 900)
+  controller.emit({ channel: 'mail.x' })
+  assert.equal(controller.get(job.id).pendingEvents.dueAt, new Date(NOW.getTime() + 900_000).toISOString())
+  const cleared = await controller.update(job.id, { coalesceSeconds: null })
+  assert.equal(cleared.coalesceSeconds, null)
+  assert.equal(cleared.coalesceEffectiveSeconds, 30)
+  assert.equal((await controller.update(job.id, { title: 'Mail 2' })).coalesceEffectiveSeconds, 30)
+  await assert.rejects(controller.update(job.id, { coalesceSeconds: -5 }), JobInputError)
+  await assert.rejects(controller.update(job.id, { coalesceSeconds: 1.5 }), JobInputError)
+  await assert.rejects(controller.create({ ...base, title: 'Bad', prompt: 'p', on: ['x'], coalesceSeconds: 'soon' }), JobInputError)
+  const plain = await controller.create({ ...base, title: 'Timer', command: 'true', schedule: { cron: '0 * * * *', timeZone: 'UTC' } })
+  assert.equal(plain.coalesceEffectiveSeconds, null)
+  await controller.stop()
+})
+
+test('a config job takes coalesceSeconds too', async () => {
+  const history = new HistoryStore({ table: memoryTable(), logger: quiet })
+  const controller = new CronJobs({
+    jobs: [{ name: 'cfg', command: 'true', on: ['x'], coalesceSeconds: 120 }],
+    logger: quiet, history, now: () => NOW, watchdogMs: 0, events: { coalesceSeconds: 30 },
+    run: async () => ({ ok: true, exitCode: 0, stdout: '', stderr: '', durationMs: 1 }),
+  }).start()
+  assert.equal(controller.get('cfg').coalesceEffectiveSeconds, 120)
+  controller.emit({ channel: 'x' })
+  assert.equal(controller.get('cfg').pendingEvents.dueAt, new Date(NOW.getTime() + 120_000).toISOString())
+  await controller.stop()
+})
