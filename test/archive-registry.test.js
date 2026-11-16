@@ -111,6 +111,21 @@ test('the real registry archives a session only after its turn ends', async (t) 
   assert.deepEqual([...registry.archivedSessionIds], ['session-a'])
 })
 
+test('a session whose turn a DSH stop cut off stays out of the archive', async (t) => {
+  // 2026-11-16: a job's session was archived as DSH stopped, so the restart resumer, which skips
+  // archived sessions, never handed its cut turn back for the rerun.
+  const { ctx, registry, add } = await host(t)
+  const cut = add('session-c')
+  cut.session.log.push({ type: 'turn/start', data: { turn: 1 } },
+    { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'disposed' } } } })
+  assert.deepEqual(await archiveWhenIdle(ctx, 'session-c'), { archive: 'kept', note: 'its turn was cut off by a DSH stop' })
+  const stopped = add('session-s')
+  stopped.session.log.push({ type: 'turn/start', data: { turn: 1 } },
+    { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } } })
+  assert.deepEqual(await archiveWhenIdle(ctx, 'session-s'), { archive: 'archived' })
+  assert.deepEqual([...registry.archivedSessionIds], ['session-s'])
+})
+
 test('pinned and person-held sessions stay out of the archive', async (t) => {
   const { ctx, registry, add } = await host(t)
   add('session-p')
