@@ -2,6 +2,7 @@
 
 ## 0.13.1
 
+- A watcher's down note could lose the stderr of the run that failed: it read the tail of the run restarted meanwhile. The tail is kept with the last exit.
 - A job's session whose turn DSH's stop cut off is no longer auto-archived: it is unfinished, and dsh-restart-resume (which leaves archived sessions alone) could not hand it back for the rerun. The rerun's own run archives it when it ends.
 
 ## 0.13.0

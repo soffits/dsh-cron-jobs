@@ -281,13 +281,13 @@ class Watcher {
     this.child = undefined
     if (this.pidFile) rm(this.pidFile, { force: true }).catch(() => {})
     const ranMs = this.startedAt === undefined ? 0 : sup.now() - this.startedAt
-    this.lastExit = { at: new Date(sup.now()).toISOString(), code, signal, ...(error ? { error } : {}), ranMs }
+    const stderrTail = this.stderr.trim().slice(-500)
+    this.lastExit = { at: new Date(sup.now()).toISOString(), code, signal, ...(error ? { error } : {}), ranMs, ...(stderrTail ? { stderrTail } : {}) }
     this.resolveExit?.()
     if (this.stopped) {
       this.state = 'stopped'
       return
     }
-    const stderrTail = this.stderr.trim().slice(-500)
     sup.record({ time: new Date(sup.now()).toISOString(), job: null, event: 'watcher-exit', watcher: def.id, code, signal, ...(error ? { error } : {}), ranMs, ...(stderrTail ? { stderrTail } : {}) })
     if (def.once) {
       this.state = 'done'
@@ -321,7 +321,8 @@ class Watcher {
     const minutes = Math.round((sup.now() - this.downSince) / 60000)
     const exit = this.lastExit
     const how = exit?.error ?? (exit?.signal ? `killed by ${exit.signal}` : `exit ${exit?.code}`)
-    const stderr = this.stderr.trim().slice(-300)
+    // The last run's, not this.stderr: a restarted run may be going already, with its own empty tail.
+    const stderr = (exit?.stderrTail ?? '').slice(-300)
     sup.record({ time: new Date(sup.now()).toISOString(), job: null, event: 'watcher-down', watcher: def.id, downMs: sup.now() - this.downSince })
     sup.notify(`⚠️ Watcher ${def.id} (${def.channel}) has been down for ${minutes} min (${this.restarts} restarts, last: ${how})${stderr ? `: ${stderr}` : ''}. Jobs on this channel only run on their schedule until it is back.`, def).catch(() => {})
   }
