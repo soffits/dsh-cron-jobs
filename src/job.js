@@ -106,7 +106,6 @@ export class JobRunner {
    * @param {(target: { via: string, to: string }, message: { text: string, files: string[] }, from: { job: string, sessionId?: string }, options: { waitMs?: number, onWait?: Function }) => Promise<{ status: 'sent' | 'failed' | 'unavailable' | 'stopped', attempts: number, error?: string }>} [deps.send] - Hands a result to its delivery service (see deliver.js sendMessage); without it nothing is delivered.
    * @param {(sessionId: string, messageId: string, options: { signal?: AbortSignal }) => Promise<{ pending: true } | { text: string, reason?: string } | { error: string }>} [deps.answer] - Waits for the final answer to a prompt (see session.js waitForAnswer).
    * @param {ReturnType<typeof import('./answer-check.js').createAnswerChecks>} [deps.checks] - Answer checks (see answer-check.js); without it a job's answerCheck is ignored.
-   * @param {(runId: string) => void} [deps.onCutOff] - Told about a run whose turn DSH cut off and that waits for its rerun (see CronJobs.planRerun); without it the rerun stays pending.
    * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object }} [deps.defaults] - Plugin-level agent settings and the default delivery target.
    * @param {{ info: Function, warn: Function }} deps.logger
    * @param {AbortSignal} [deps.signal] - Stops a running command when aborted.
@@ -114,12 +113,11 @@ export class JobRunner {
    * @param {{ begin: Function, finish: Function }} [deps.history] - Saved run history (see history.js).
    * @param {() => Date} [deps.now]
    */
-  constructor(job, { run, wake, reuse, keepSession, settle, send, answer, checks, onCutOff, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
+  constructor(job, { run, wake, reuse, keepSession, settle, send, answer, checks, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
     this.job = job
     this.send = send
     this.answer = answer
     this.checks = checks
-    this.onCutOff = onCutOff
     this.reuse = reuse
     this.keepSession = keepSession
     this.settle = settle
@@ -411,14 +409,17 @@ export class JobRunner {
   }
 
   /**
-   * A run's turn was cut off: save that its rerun is pending and tell the
-   * controller, which reruns it once DSH is back. A rerun is never rerun
-   * again, so a turn that keeps getting cut off does not loop.
+   * A run's turn was cut off: save that its rerun is pending. The rerun
+   * starts when dsh-restart-resume hands the cut turn back after the restart
+   * (CronJobs.continueCut); a rerun the handover already started or skipped
+   * keeps its record. A rerun is never rerun again, so a turn that keeps
+   * getting cut off does not loop.
    */
   async markCutOff(sessionId, runId) {
     const { job, logger } = this
     const run = this.history.runs(jobKey(job)).find(saved => saved.id === runId)
     const time = this.now().toISOString()
+    if (run?.rerun !== undefined) return
     if (run?.rerunOf !== undefined) {
       const note = 'a rerun is not run again'
       await this.history.update(jobKey(job), runId, { rerun: { status: 'skipped', at: time, note } })
@@ -429,15 +430,13 @@ export class JobRunner {
     await this.history.update(jobKey(job), runId, { rerun: { status: 'pending' } })
     await this.record({ time, job: job.name, event: 'cut-off', runId, sessionId })
     logger.warn('[%s] the turn in session %s was cut off before it finished; it runs again once DSH is back', job.name, sessionId)
-    this.onCutOff?.(runId)
   }
 
   /**
    * After a restart or reload: pick up what an earlier copy of the plugin
    * left pending. Turns are watched again (they may still be running, after
-   * a plugin reload or on a provider that outlives a restart), kept
-   * deliveries are sent, and cut-off runs go back to the controller for
-   * their rerun.
+   * a plugin reload or on a provider that outlives a restart), and kept
+   * deliveries are sent.
    */
   async resumeRuns() {
     for (const run of this.history.runs(jobKey(this.job))) {
@@ -450,7 +449,6 @@ export class JobRunner {
         this.expectCheck(messageId)
         this.watchTurn(run.sessionId, run.id, messageId, delivery)
       }
-      if (run.rerun?.status === 'pending') this.onCutOff?.(run.id)
     }
   }
 

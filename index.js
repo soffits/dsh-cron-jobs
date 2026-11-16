@@ -42,6 +42,19 @@ export function apply(ctx, config) {
   // The tools plugin looks this up at call time; `controller()` is undefined
   // while the jobs start or stop.
   ctx.provide?.('cronJobs', Object.freeze({ controller: () => current }))
+  // Resolves once the jobs of the current effect have started (or failed to).
+  let started = Promise.resolve()
+
+  // dsh-restart-resume finds every turn a DSH restart cut off, in DSH's log,
+  // and hands back the ones a job started: rerun policy and delivery are ours.
+  // Only this claim depends on it, so the scheduler runs with or without it.
+  ctx.inject?.(['restartResume'], (sub) => {
+    const drop = sub.restartResume?.claim('cron-job', async (turn) => {
+      await started
+      return current ? current.continueCut(turn) : { continued: false, why: 'the scheduler is not running' }
+    })
+    if (drop) sub.effect(() => drop)
+  })
 
   ctx.effect(() => {
     // Aborting stops commands still running when the plugin unloads.
@@ -98,6 +111,7 @@ export function apply(ctx, config) {
       })
       await spool.start()
     })().catch(error => logger.error('cron jobs not started: %s', error instanceof Error ? error.message : String(error)))
+    started = ready
     return async () => {
       current = undefined
       stopTurnHook?.()

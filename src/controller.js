@@ -11,9 +11,6 @@ export const WATCHDOG_MS = 60_000
 /** How late a tick must be before the watchdog treats its timer as lost. */
 export const OVERDUE_MS = 60_000
 
-/** Wait after a cut-off turn is found before it runs again, so DSH has finished starting (or stopping). */
-export const RERUN_DELAY_MS = 30_000
-
 /** A cut-off run older than this is not rerun: its moment has passed. */
 export const RERUN_MAX_AGE_MS = 2 * 3600_000
 
@@ -86,7 +83,7 @@ export class CronJobs {
    * @param {{ set: typeof setTimeout, clear: typeof clearTimeout }} [options.timers] - Event batch timers; replaceable for tests.
    * @param {object[]} [options.watchers] - Watchers from the plugin config.
    * @param {object} [options.watcherOptions] - Passed to {@link WatcherSupervisor} (stateRoot, limits, spawn).
-   * @param {{ delayMs?: number, maxAgeMs?: number, minLeadMs?: number }} [options.rerun] - Limits for rerunning cut-off runs (see planRerun).
+   * @param {{ maxAgeMs?: number, minLeadMs?: number }} [options.rerun] - Limits for rerunning cut-off runs (see continueCut).
    */
   constructor({ jobs, logger, run, wake, reuse, settle, send, answer, checks, defaults = {}, signal, record, history, CronClass = CronTimer, TimerClass = ScheduleTimer, now = () => new Date(), watchdogMs = WATCHDOG_MS, overdueMs = OVERDUE_MS, events = {}, timers, watchers = [], watcherOptions = {}, rerun = {} }) {
     this.logger = logger
@@ -106,12 +103,9 @@ export class CronJobs {
       ...(timers ? { timers } : {}),
     }
     this.rerunLimits = {
-      delayMs: rerun.delayMs ?? RERUN_DELAY_MS,
       maxAgeMs: rerun.maxAgeMs ?? RERUN_MAX_AGE_MS,
       minLeadMs: rerun.minLeadMs ?? RERUN_MIN_LEAD_MS,
     }
-    /** Reruns waiting for their delay. */
-    this.rerunTimers = new Set()
     this.deduper = new Deduper({ now: () => this.now().getTime() })
     this.configWatchers = []
     for (const def of watchers) {
@@ -151,7 +145,6 @@ export class CronJobs {
     entry.runner = new JobRunner(entry.job, {
       ...this.deps,
       ...(entry.record ? { keepSession: sessionId => this.keepSession(entry, sessionId) } : {}),
-      onCutOff: runId => this.planRerun(entry, runId),
     })
     this.entries.set(entry.job.id, entry)
     this.subscribe(entry)
@@ -428,37 +421,48 @@ export class CronJobs {
   }
 
   /**
-   * A run's turn was cut off by DSH (a restart or reload disposed it): rerun
-   * it once, after a short delay so a stopping DSH does not start it and a
-   * starting one has settled. A stop cancels the wait and the rerun stays
-   * pending in the run's history for the next start.
+   * A turn of one of this scheduler's runs that a DSH restart cut off, handed
+   * over by dsh-restart-resume (which finds every cut turn in DSH's log and
+   * asks the plugin that started it): rerun it once, as a follow-up in its own
+   * session, unless the limits say its moment has passed.
+   * @param {{ sessionId: string, principal: { id?: string } }} turn
+   * @returns {Promise<{ continued: boolean, why?: string }>}
    */
-  planRerun(entry, runId) {
-    if (this.stopped) return
-    const timer = setTimeout(() => {
-      this.rerunTimers.delete(timer)
-      this.rerun(entry, runId).catch(error => this.logger.warn('[%s] rerun not started: %s', entry.job.name, String(error)))
-    }, this.rerunLimits.delayMs)
-    timer.unref?.()
-    this.rerunTimers.add(timer)
+  async continueCut({ sessionId, principal }) {
+    const entry = this.entries.get(principal?.id)
+    if (entry === undefined) return { continued: false, why: 'no such job' }
+    if (this.history === undefined) return { continued: false, why: 'no run history' }
+    const run = this.history.runs(entry.job.id).find(saved => saved.sessionId === sessionId)
+    if (run === undefined) return { continued: false, why: 'no run of the job in that session' }
+    if (run.rerun !== undefined && run.rerun.status !== 'pending') return { continued: false, why: run.rerun.note ?? `its rerun is already ${run.rerun.status}` }
+    if (run.rerunOf !== undefined) {
+      await this.skipRerun(entry, run, 'a rerun is not run again')
+      return { continued: false, why: 'a rerun is not run again' }
+    }
+    if (run.rerun === undefined) await this.history.update(entry.job.id, run.id, { rerun: { status: 'pending' } })
+    return this.rerun(entry, run.id)
   }
 
   /** Start a pending rerun, or record why it is skipped. */
   async rerun(entry, runId) {
-    if (this.stopped || this.entries.get(entry.job.id) !== entry || this.history === undefined) return
+    if (this.stopped || this.entries.get(entry.job.id) !== entry) return { continued: false, why: 'the scheduler is stopping' }
     const runs = this.history.runs(entry.job.id)
     const run = runs.find(saved => saved.id === runId)
-    if (run?.rerun?.status !== 'pending') return
     const note = this.rerunSkipReason(entry, run, runs)
     if (note !== undefined) {
-      const time = this.now().toISOString()
-      await this.history.update(entry.job.id, runId, { rerun: { status: 'skipped', at: time, note } })
-      await this.record({ time, job: entry.job.name, event: 'rerun-skipped', runId, note })
-      this.logger.info('[%s] cut-off run not rerun: %s', entry.job.name, note)
-      return
+      await this.skipRerun(entry, run, note)
+      return { continued: false, why: note }
     }
     // Not a scheduled run: it neither moves the schedule nor ends a once job.
     this.runTracked(entry, entry.runner.tick({ trigger: run.trigger, rerunOf: run }))
+    return { continued: true }
+  }
+
+  async skipRerun(entry, run, note) {
+    const time = this.now().toISOString()
+    await this.history.update(entry.job.id, run.id, { rerun: { status: 'skipped', at: time, note } })
+    await this.record({ time, job: entry.job.name, event: 'rerun-skipped', runId: run.id, note })
+    this.logger.info('[%s] cut-off run not rerun: %s', entry.job.name, note)
   }
 
   /** Why a cut-off run should not run again now, or undefined. */
@@ -506,8 +510,6 @@ export class CronJobs {
     if (this.stopped) return Promise.allSettled([...this.inflight])
     this.stopped = true
     clearInterval(this.watchdog)
-    for (const timer of this.rerunTimers) clearTimeout(timer)
-    this.rerunTimers.clear()
     for (const entry of this.entries.values()) {
       entry.timer?.stop()
       entry.batcher?.stop()
