@@ -32,8 +32,6 @@ export const storedJobSchema = z.object({
   title: z.string().min(1),
   prompt: z.string().optional(),
   command: z.string().optional(),
-  // Command that checks the agent's final answer before its turn closes (answer-check.js).
-  answerCheck: z.string().optional(),
   // Omitted for a job that runs only on events.
   schedule: scheduleSchema.optional(),
   // Channel patterns whose events start a run (events.js).

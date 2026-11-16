@@ -110,7 +110,6 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
 | `agent.reuseWithinHours` | Send the prompt into the job's previous woken session when that session was opened less than this many hours ago (see below). `0` always opens a new session. The row's `reuseWithinHours` when unset. |
 | `agent.model.provider`, `agent.model.model` | Model of the new session, with the same provider and model ids the model picker uses. Both must be set; otherwise the preset's or the Host's default model applies. |
 | `agent.model.reasoningEffort` | Reasoning effort id for that model. The model's default when empty. |
-| `agent.answerCheck` | Command that checks the agent's final answer before its turn closes (see [Answer checks](#answer-checks)). No check when empty. |
 
 Next to `jobs`, the row also takes:
 
@@ -174,14 +173,6 @@ A woken turn that a DSH restart cuts off before it finishes is run again once. A
 
 The rerun is skipped, with the reason in the run history and a `rerun-skipped` run-log line, when the cut-off run started more than 2 hours ago, a later run of the job has woken the agent since, the job's next run is less than 15 minutes away, or the job is paused, disabled or deleted. A session the job opened for itself that a person has since taken over is left alone: the rerun fails with a note to the delivery target. A rerun that is cut off too is not run again. The run log marks the cut-off with a `cut-off` line, and the rerun's `start` line carries `rerunOf`.
 
-### Answer checks
-
-A job can name a command, `agent.answerCheck` (or `answerCheck` in the tools), that looks at the agent's final answer while the turn can still change it. When the turn that the job's prompt started is about to close, the command runs with the answer on stdin, in the session's working directory, with a 60-second limit. Empty stdout passes the answer. Anything it prints goes back into the same turn as a message asking for a rewrite, and the agent's next answer is the one delivered. Each run is steered at most once, so a check that never passes cannot keep a turn going. Empty answers, `[SILENT]` and answers with only `MEDIA:` lines are not checked. A command that fails or times out lets the answer through.
-
-Use it for checks that are cheap to script and costly to miss, such as the answer's language or a format the channel needs. The run log gets an `answer-check` line per check (`passed`, `steered` or `error`) and, after a rewrite, an `answer-recheck` line saying whether the delivered answer passed (`fixed` or `still-flagged`).
-
-It works on DSH's `agent/turn-stopping` hook: a listener that steers a message there makes the agent loop run one more step in the same turn.
-
 ### Who sent a prompt
 
 Every prompt a job puts into a session has the source kind `schedule`, which the Web GUI shows as a scheduled run, and names the job as `principal`, the field DSH uses for the caller behind a user message:
@@ -190,7 +181,7 @@ Every prompt a job puts into a session has the source kind `schedule`, which the
 { kind: 'cron-job', channel: 'cron', id, name, trigger, events }
 ```
 
-`id` is the job's id (its name for a config job), `name` its name, `trigger` what started the run (`schedule`, `manual`, `event`, `rerun`, or `answer-check` for an answer check's rewrite request), and `events` the channels of the events that started an event run. Scripts that read session logs can tell job prompts apart, and which job sent each, without parsing the text.
+`id` is the job's id (its name for a config job), `name` its name, `trigger` what started the run (`schedule`, `manual`, `event`, or `rerun`), and `events` the channels of the events that started an event run. Scripts that read session logs can tell job prompts apart, and which job sent each, without parsing the text.
 
 ### Delivery channels
 
@@ -319,7 +310,6 @@ Where the prompt goes (`target`):
 
 `prompt_replace` and `command_replace` on `cron_job_edit` change a long prompt or command without resending it: a list of literal `{ "old": "...", "new": "...", "replace_all": false }` replacements, applied in order, each to the result of the one before. Every `old` must match exactly once unless that item sets `replace_all`; otherwise the call fails naming the item (`prompt_replace[1] (old "..."): no match` or `matches 3 times`) and changes nothing. They cannot be combined with `prompt` or `command`.
 
-`answerCheck` sets the job's [answer check](#answer-checks) command; on `cron_job_edit`, an empty string removes it.
 
 `model` is an object, `{ "provider": "anthropic", "model": "claude-sonnet-4-5", "reasoningEffort": "high" }`, with the same ids the model picker uses; `provider` and `model` are required together and `reasoningEffort` is optional. The sessions the job opens start on that model, like `agent.model` on a config job; left out, the preset's or host default applies. `cron_job_edit` with `model` sets it on an existing job, and an empty object (`{}`) clears it. `cron_job_list` and `cron_job_view` show the model when one is set. A job that posts into an existing session (`this_session`, `sessionId`) does not open a session, so its model has no effect.
 

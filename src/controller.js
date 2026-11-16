@@ -85,7 +85,7 @@ export class CronJobs {
    * @param {object} [options.watcherOptions] - Passed to {@link WatcherSupervisor} (stateRoot, limits, spawn).
    * @param {{ maxAgeMs?: number, minLeadMs?: number }} [options.rerun] - Limits for rerunning cut-off runs (see continueCut).
    */
-  constructor({ jobs, logger, run, wake, reuse, settle, send, answer, checks, defaults = {}, signal, record, history, CronClass = CronTimer, TimerClass = ScheduleTimer, now = () => new Date(), watchdogMs = WATCHDOG_MS, overdueMs = OVERDUE_MS, events = {}, timers, watchers = [], watcherOptions = {}, rerun = {} }) {
+  constructor({ jobs, logger, run, wake, reuse, settle, send, answer, defaults = {}, signal, record, history, CronClass = CronTimer, TimerClass = ScheduleTimer, now = () => new Date(), watchdogMs = WATCHDOG_MS, overdueMs = OVERDUE_MS, events = {}, timers, watchers = [], watcherOptions = {}, rerun = {} }) {
     this.logger = logger
     this.defaults = defaults
     this.history = history
@@ -96,7 +96,7 @@ export class CronJobs {
     this.watchdogMs = watchdogMs
     this.overdueMs = overdueMs
     this.record = record ?? (async () => {})
-    this.deps = { run, wake, reuse, settle, send, answer, checks, defaults, logger, signal, record, history, now }
+    this.deps = { run, wake, reuse, settle, send, answer, defaults, logger, signal, record, history, now }
     this.eventSettings = {
       coalesceMs: (events.coalesceSeconds ?? DEFAULT_COALESCE_SECONDS) * 1000,
       maxRunsPerHour: events.maxRunsPerHour ?? DEFAULT_MAX_RUNS_PER_HOUR,
@@ -623,7 +623,6 @@ export class CronJobs {
       title: title(input.title),
       ...text('prompt', input.prompt),
       ...text('command', input.command),
-      ...text('answerCheck', input.answerCheck),
       ...(spec ? { schedule: spec } : {}),
       ...(on.length > 0 ? { on } : {}),
       ...(input.once === true ? { once: true } : {}),
@@ -663,7 +662,7 @@ export class CronJobs {
     const current = entry.record
     const next = { ...current, updatedAt: now.toISOString() }
     if (patch.title !== undefined) next.title = title(patch.title)
-    for (const field of ['prompt', 'command', 'answerCheck']) {
+    for (const field of ['prompt', 'command']) {
       if (patch[field] === undefined) continue
       delete next[field]
       Object.assign(next, text(field, patch[field]))
@@ -849,7 +848,7 @@ function fromStored(record) {
     ...(record.cwd ? { cwd: record.cwd } : {}),
     timeoutSeconds: record.timeoutSeconds ?? DEFAULT_STORED_TIMEOUT_SECONDS,
     timeZone: scheduleZone(record.schedule),
-    ...(record.prompt ? { agent: { prompt: record.prompt, ...(record.preset ? { preset: record.preset } : {}), ...(record.cwd ? { cwd: record.cwd } : {}), ...(record.model ? { model: record.model } : {}), ...(record.answerCheck ? { answerCheck: record.answerCheck } : {}) } } : {}),
+    ...(record.prompt ? { agent: { prompt: record.prompt, ...(record.preset ? { preset: record.preset } : {}), ...(record.cwd ? { cwd: record.cwd } : {}), ...(record.model ? { model: record.model } : {}) } } : {}),
     target: record.target,
     ...(record.deliver !== undefined ? { deliver: record.deliver } : {}),
     spec: record.schedule,
@@ -940,7 +939,6 @@ function agentView(job, defaults) {
     // Where the cwd came from: the job, the plugin default, or the job's command cwd.
     cwdSource: job.agent.cwd ? 'job' : defaults.agentCwd ? 'default' : job.cwd ? 'command' : null,
     model: agentModel(job) ?? null,
-    answerCheck: job.agent.answerCheck || null,
     // An explicit session is never archived or swapped for another one.
     autoArchive: target === 'session' ? false : settings.autoArchive,
     reuseWithinHours: target === 'new' ? settings.reuseWithinHours : 0,
