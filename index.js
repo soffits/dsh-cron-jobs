@@ -17,7 +17,6 @@ import { runCommand } from './src/command.js'
 import { archiveWhenIdle, deliverToSession, openAgentSession, waitForAnswer } from './src/session.js'
 import { sendMessage } from './src/deliver.js'
 import { CronJobs } from './src/controller.js'
-import { createAnswerChecks } from './src/answer-check.js'
 import { createRunLog } from './src/runlog.js'
 import { openHistory } from './src/history.js'
 import { createRoutes, createRpcHandler } from './src/rpc.js'
@@ -61,17 +60,13 @@ export function apply(ctx, config) {
     const controller = new AbortController()
     let jobs
     let history
-    let checks
     let spool
-    // A job's answerCheck runs as the turn its prompt started is about to close.
-    const stopTurnHook = ctx.on?.('agent/turn-stopping', payload => checks?.onTurnStopping(payload))
     const ready = (async () => {
       history = await openHistory(ctx.storageDomain, {
         limit: config.historyRecords, logger, signal: controller.signal,
       })
       if (controller.signal.aborted) return
       const record = createRunLog(config.runLog || undefined, logger)
-      checks = createAnswerChecks({ run: runCommand, logger, record })
       jobs = new CronJobs({
         jobs: config.jobs ?? [],
         logger,
@@ -83,7 +78,6 @@ export function apply(ctx, config) {
         // this plugin, reload, or be missing for a while (the delivery waits).
         send: (target, message, from, options) => sendMessage({ lookup: name => ctx.get(name), target, message, from, signal: controller.signal, ...options }),
         answer: (sessionId, messageId, options) => waitForAnswer(ctx, sessionId, messageId, options),
-        checks,
         defaults: {
           agentCwd: config.defaultAgentCwd || undefined,
           autoArchive: config.autoArchive ?? true,
@@ -114,7 +108,6 @@ export function apply(ctx, config) {
     started = ready
     return async () => {
       current = undefined
-      stopTurnHook?.()
       // Stop reading events first, so none reaches a stopping scheduler.
       await spool?.stop()
       // Stop the timers first so no new run starts with an aborted signal.

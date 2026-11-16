@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.0
+
+- Removed answer checks (`agent.answerCheck`, the `answerCheck` tool field and the `answer-check` / `answer-recheck` run-log lines). A command that rewrites an agent's answer after the fact hides why the answer was wrong instead of fixing the prompt that produced it, and no job used it. A stored job that still names one keeps running; the field is dropped at its next edit.
+
 ## 0.13.1
 
 - A watcher's down note could lose the stderr of the run that failed: it read the tail of the run restarted meanwhile. The tail is kept with the last exit.

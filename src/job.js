@@ -105,7 +105,6 @@ export class JobRunner {
    * @param {(sessionId: string, options: { signal?: AbortSignal, isLatest: () => boolean, lock: Function }) => Promise<{ archive: string, note?: string }>} [deps.settle] - Archives a session after its turn (see session.js archiveWhenIdle); without it nothing is archived.
    * @param {(target: { via: string, to: string }, message: { text: string, files: string[] }, from: { job: string, sessionId?: string }, options: { waitMs?: number, onWait?: Function }) => Promise<{ status: 'sent' | 'failed' | 'unavailable' | 'stopped', attempts: number, error?: string }>} [deps.send] - Hands a result to its delivery service (see deliver.js sendMessage); without it nothing is delivered.
    * @param {(sessionId: string, messageId: string, options: { signal?: AbortSignal }) => Promise<{ pending: true } | { text: string, reason?: string } | { error: string }>} [deps.answer] - Waits for the final answer to a prompt (see session.js waitForAnswer).
-   * @param {ReturnType<typeof import('./answer-check.js').createAnswerChecks>} [deps.checks] - Answer checks (see answer-check.js); without it a job's answerCheck is ignored.
    * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object }} [deps.defaults] - Plugin-level agent settings and the default delivery target.
    * @param {{ info: Function, warn: Function }} deps.logger
    * @param {AbortSignal} [deps.signal] - Stops a running command when aborted.
@@ -113,11 +112,10 @@ export class JobRunner {
    * @param {{ begin: Function, finish: Function }} [deps.history] - Saved run history (see history.js).
    * @param {() => Date} [deps.now]
    */
-  constructor(job, { run, wake, reuse, keepSession, settle, send, answer, checks, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
+  constructor(job, { run, wake, reuse, keepSession, settle, send, answer, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
     this.job = job
     this.send = send
     this.answer = answer
-    this.checks = checks
     this.reuse = reuse
     this.keepSession = keepSession
     this.settle = settle
@@ -324,8 +322,6 @@ export class JobRunner {
       const answer = await this.answer(sessionId, messageId, { signal: this.signal })
       if ('pending' in answer || this.signal?.aborted) return undefined
       const cut = 'text' in answer && cutOff(answer)
-      if ('text' in answer && !cut) await this.checks?.recheck(messageId, answer.text, { sessionId, signal: this.signal })
-      this.checks?.forget(messageId)
       const reason = 'error' in answer ? 'error' : answer.reason
       await this.history.update(jobKey(job), runId, { turn: { status: cut ? 'cut-off' : 'ended', messageId, ...(reason ? { reason } : {}) } })
       let delivery
@@ -446,7 +442,6 @@ export class JobRunner {
       if (delivery?.message !== undefined) {
         this.watchDelivery(run.sessionId, run.id, delivery)
       } else if (messageId && run.sessionId && this.answer !== undefined) {
-        this.expectCheck(messageId)
         this.watchTurn(run.sessionId, run.id, messageId, delivery)
       }
     }
@@ -496,10 +491,7 @@ export class JobRunner {
     const target = job.target ?? { kind: 'new' }
     // Lets the answer to this prompt be found once its turn ends.
     const messageId = randomUUID()
-    // Watched before the prompt is sent, so even a turn that ends at once is checked.
-    this.expectCheck(messageId)
     const sent = await this.deliverPrompt({ job, target, text, messageId, settings, firedAt, localTime })
-    if (sent.status !== 'woke') this.checks?.forget(messageId)
     return sent.status === 'woke' ? { ...sent, messageId } : sent
   }
 
@@ -523,7 +515,6 @@ export class JobRunner {
       delivery: this.deliveryTarget(),
     })
     const messageId = randomUUID()
-    this.expectCheck(messageId)
     const archive = target.kind !== 'session' && settings.autoArchive && this.settle !== undefined ? { archive: 'pending' } : {}
     const fresh = target.kind === 'new'
     const sent = await this.sendToTarget(original.sessionId, text, {
@@ -533,7 +524,6 @@ export class JobRunner {
       messageId,
       fields: fresh ? { reused: true, sessionOpenedAt: original.sessionOpenedAt ?? original.startedAt } : { targeted: true },
     })
-    if (sent.status !== 'woke') this.checks?.forget(messageId)
     return sent.status === 'woke' ? { ...sent, messageId } : sent
   }
 
@@ -552,14 +542,6 @@ export class JobRunner {
       trigger: current?.rerunOf ? 'rerun' : current?.trigger ?? 'schedule',
       ...(current?.events?.channels?.length ? { events: [...current.events.channels] } : {}),
     }
-  }
-
-  /** Have the answer to this prompt checked before its turn closes, when the job names a check. */
-  expectCheck(messageId) {
-    const command = this.job.agent?.answerCheck
-    if (!command || this.checks === undefined) return
-    const cwd = agentSettings(this.job, this.defaults).cwd
-    this.checks.expect(messageId, { job: this.job.name, jobId: jobKey(this.job), command, ...(cwd ? { cwd } : {}) })
   }
 
   /** Send the prompt to the target session, a reused one, or a new one. */
