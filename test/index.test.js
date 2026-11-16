@@ -40,7 +40,7 @@ test('apply opens history, arms jobs, serves the page channel and cleans up', as
   assert.equal(name, 'dsh-cron-jobs')
   assert.deepEqual(inject, ['storageDomain'])
   assert.equal(effects.length, 1)
-  assert.deepEqual(injected, [['connection', 'webServer']])
+  assert.deepEqual(injected, [['restartResume'], ['connection', 'webServer']])
 
   assert.deepEqual([...handlers.keys()], ENDPOINTS.map(endpoint => `${CHANNEL}/${endpoint}`))
   const route = handlers.get(`${CHANNEL}/list`)

@@ -45,7 +45,7 @@ function fakeTimers() {
  * One copy of the scheduler. `answers` gives the end of each prompt's turn
  * in order (the last one repeats); `nextRun` is the config jobs' next tick.
  */
-function scheduler({ jobs = [], history, answers = [CUT, DONE], nextRun = null, rerun = { delayMs: 5 }, deliver = NOTIFY, now = () => NOW }) {
+function scheduler({ jobs = [], history, answers = [CUT, DONE], nextRun = null, rerun = {}, deliver = NOTIFY, now = () => NOW }) {
   const { FakeTimer, timers } = fakeTimers()
   const wakes = []
   const reuses = []
@@ -76,6 +76,8 @@ function scheduler({ jobs = [], history, answers = [CUT, DONE], nextRun = null, 
 }
 
 const checkIn = { name: 'Check-in', cron: '0 * * * *', agent: { prompt: 'Look around.' } }
+/** What dsh-restart-resume hands over for a cut turn of the job's run in `sessionId`. */
+const handOver = (controller, sessionId, id = 'Check-in') => controller.continueCut({ sessionId, principal: { kind: 'cron-job', id } })
 const newHistory = () => new HistoryStore({ table: memoryTable(), logger: quiet })
 const drain = async (controller) => {
   for (const { runner } of controller.entries.values()) {
@@ -97,10 +99,14 @@ test('a turn DSH disposed is told apart from one a person stopped', () => {
   assert.equal(cutOff({ reason: 'completed' }), false)
 })
 
-test('a cut-off turn runs again once, in its own session, and only the rerun\'s answer is delivered', async () => {
+test('a cut-off turn runs again once, in its own session, when it is handed back, and only the rerun\'s answer is delivered', async () => {
   const history = newHistory()
   const { controller, wakes, reuses, sent, records } = scheduler({ jobs: [checkIn], history })
   controller.fire(controller.entries.get('Check-in'))
+  await until(() => history.runs('Check-in')[0]?.rerun?.status === 'pending', 'the cut-off mark')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(reuses.length, 0, 'nothing reruns on its own')
+  assert.deepEqual(await handOver(controller, 'session-1'), { continued: true })
   await until(() => history.runs('Check-in')[0]?.delivery?.status === 'sent' && history.runs('Check-in').length === 2, 'the rerun\'s delivery')
   await drain(controller)
 
@@ -135,16 +141,17 @@ test('a cut-off turn runs again once, in its own session, and only the rerun\'s 
   await controller.stop()
 })
 
-test('a cut-off run seen while DSH stops is rerun by the next start', async () => {
+test('a cut-off run seen while DSH stops is rerun by the next start once handed back', async () => {
   const history = newHistory()
-  const first = scheduler({ jobs: [checkIn], history, rerun: { delayMs: 60_000 } })
+  const first = scheduler({ jobs: [checkIn], history })
   first.controller.fire(first.controller.entries.get('Check-in'))
   await until(() => history.runs('Check-in')[0]?.rerun?.status === 'pending', 'the pending rerun')
   await drain(first.controller)
   await first.controller.stop()
-  assert.equal(first.reuses.length, 0, 'the stop cancels the waiting rerun')
+  assert.equal(first.reuses.length, 0)
 
   const second = scheduler({ jobs: [checkIn], history, answers: [DONE] })
+  assert.deepEqual(await handOver(second.controller, 'session-1'), { continued: true })
   await until(() => history.runs('Check-in').length === 2 && history.runs('Check-in')[0].delivery?.status === 'sent', 'the rerun after the restart')
   await drain(second.controller)
   assert.equal(second.reuses.length, 1)
@@ -160,6 +167,8 @@ test('a turn cut off before the plugin noticed is found by the next start and re
   // Saved before turns were tracked: the prompt id sits on the pending delivery.
   await history.finish('Check-in', id, { status: 'woke', sessionId: 'session-old', delivery: { status: 'pending', ...NOTIFY, messageId: 'm-old' } })
   const { controller, reuses, sent, asked } = scheduler({ jobs: [checkIn], history })
+  await until(() => history.runs('Check-in')[0].rerun?.status === 'pending', 'the cut-off found')
+  assert.deepEqual(await handOver(controller, 'session-old'), { continued: true })
   await until(() => history.runs('Check-in').length === 2 && history.runs('Check-in')[0].delivery?.status === 'sent', 'the rerun')
   await drain(controller)
   assert.deepEqual(asked[0], { sessionId: 'session-old', messageId: 'm-old' })
@@ -191,7 +200,9 @@ for (const [why, setup, options, note] of [
   test(`a cut-off run is not rerun when ${why}`, async () => {
     const { history, id } = await pendingRerun(setup)
     const { controller, reuses, records } = scheduler({ jobs: [checkIn], history, ...options })
-    await until(() => history.runs('Check-in').find(run => run.id === id).rerun.status === 'skipped', 'the skip')
+    const answer = await handOver(controller, 'session-old')
+    assert.equal(answer.continued, false)
+    assert.match(answer.why, note)
     await drain(controller)
     assert.equal(reuses.length, 0)
     const { rerun } = history.runs('Check-in').find(run => run.id === id)
@@ -204,6 +215,7 @@ for (const [why, setup, options, note] of [
 test('a later gate run that did not wake the agent does not stand in for the rerun', async () => {
   const { history } = await pendingRerun({ later: 'idle' })
   const { controller, reuses } = scheduler({ jobs: [checkIn], history, answers: [DONE] })
+  await handOver(controller, 'session-old')
   await until(() => reuses.length === 1, 'the rerun')
   await drain(controller)
   await controller.stop()
@@ -213,7 +225,7 @@ test('a paused job\'s cut-off run is not rerun', async () => {
   const { history, id } = await pendingRerun()
   await history.setPaused('Check-in', true, NOW)
   const { controller, reuses } = scheduler({ jobs: [checkIn], history })
-  await until(() => history.runs('Check-in').find(run => run.id === id).rerun.status === 'skipped', 'the skip')
+  assert.deepEqual(await handOver(controller, 'session-old'), { continued: false, why: 'the job is paused' })
   assert.equal(history.runs('Check-in').find(run => run.id === id).rerun.note, 'the job is paused')
   assert.equal(reuses.length, 0)
   await controller.stop()
@@ -223,7 +235,10 @@ test('a rerun that is cut off too is not rerun again', async () => {
   const history = newHistory()
   const { controller, reuses, records, sent } = scheduler({ jobs: [checkIn], history, answers: [CUT] })
   controller.fire(controller.entries.get('Check-in'))
+  await until(() => history.runs('Check-in')[0]?.rerun?.status === 'pending', 'the cut-off mark')
+  assert.deepEqual(await handOver(controller, 'session-1'), { continued: true })
   await until(() => history.runs('Check-in')[0]?.rerun?.status === 'skipped', 'the rerun\'s skip')
+  assert.deepEqual(await handOver(controller, 'session-1'), { continued: false, why: 'a rerun is not run again' })
   await new Promise(resolve => setTimeout(resolve, 30))
   await drain(controller)
   const runs = history.runs('Check-in')
@@ -243,6 +258,8 @@ test('a one-time job reruns after it has ended, without a delivery target, into 
     title: 'Parcel check', prompt: 'Has the parcel arrived?', schedule: { at: '2026-11-14T03:10:00Z' }, target: { kind: 'new_once' },
   })
   timers.at(-1).fire()
+  await until(() => history.runs(job.id)[0]?.rerun?.status === 'pending', 'the cut-off mark')
+  assert.deepEqual(await handOver(controller, 'session-1', job.id), { continued: true })
   await until(() => history.runs(job.id).length === 2, 'the rerun')
   await drain(controller)
   assert.equal(controller.get(job.id).state, 'ended')
@@ -257,5 +274,14 @@ test('a one-time job reruns after it has ended, without a delivery target, into 
   assert.equal(original.turn.status, 'cut-off')
   assert.equal(rerun.targeted, true)
   assert.equal(rerun.turn.status, 'ended')
+  await controller.stop()
+})
+
+test('a handed-back turn the scheduler does not know is not continued', async () => {
+  const history = newHistory()
+  const { controller, reuses } = scheduler({ jobs: [checkIn], history })
+  assert.deepEqual(await handOver(controller, 'session-x', 'Gone'), { continued: false, why: 'no such job' })
+  assert.deepEqual(await handOver(controller, 'session-x'), { continued: false, why: 'no run of the job in that session' })
+  assert.equal(reuses.length, 0)
   await controller.stop()
 })
