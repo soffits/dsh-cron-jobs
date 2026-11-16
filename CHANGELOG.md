@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0
+
+- A job can have its own event window: `coalesceSeconds` on `cron_job_create`, `cron_job_edit` (a negative number removes it) and config jobs, shown by `cron_job_view`, `cron_job_list` and the Cron tasks page. Without it the job uses `events.coalesceSeconds`, as before. A mailbox job can gather a quarter of an hour of mail into one run while an alert job still runs at once.
+
 ## 0.11.0
 
 - `cron_job_edit` takes `prompt_replace` and `command_replace`: lists of literal `{old, new, replace_all?}` replacements applied in order, so a one-sentence change no longer means resending the whole text. Each `old` must match exactly once unless `replace_all` is set; an error names the failing item and nothing is changed.

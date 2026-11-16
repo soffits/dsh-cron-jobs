@@ -93,6 +93,7 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
 | `name` | Job name, used in logs and session titles. Must be unique. |
 | `cron` | Cron expression: 5 fields, or 6 with seconds first. Parsed by [croner](https://github.com/hexagon/croner), which handles daylight-saving changes like Vixie cron: a fixed time skipped by a spring forward runs at the first valid time after the gap, a fixed time repeated by a fall back runs once, and patterns with several hours, minutes or seconds run on both repeated occurrences. Set exactly one of `cron`, `rrule` and `at`, or none when the job has `on`. |
 | `on` | Event channel patterns that start a run, such as `[mail.inbox, alerts.*]`. See [Events](#events). |
+| `coalesceSeconds` | How long this job's events gather before it runs once. `0` runs at once. The row's `events.coalesceSeconds` when unset. |
 | `rrule` | RFC 5545 schedule: a `DTSTART` line and an `RRULE` line. The time zone comes from `DTSTART` (`TZID=...`, or `Z` for UTC). See [Schedules](#schedules). |
 | `at` | Run once at this time: ISO 8601 with an offset, or a local date-time read in `timeZone`. |
 | `timeZone` | IANA time zone for the cron expression or an `at` without offset. The Host's zone when empty. |
@@ -122,7 +123,7 @@ Next to `jobs`, the row also takes:
 | `historyRecords` | Runs kept per job for the Cron tasks page. Default 50, at most 1000. |
 | `runLog` | Optional JSON Lines file of run starts and ends, see below. |
 | `watchers` | Long-running commands whose output lines are events: `[{ id, channel, command, cwd, enabled }]`. See [Watchers](#watchers). |
-| `events.coalesceSeconds` | Events for one job that arrive within this many seconds of the first start one run. Default 30. |
+| `events.coalesceSeconds` | Events for one job that arrive within this many seconds of the first start one run. Default 30; a job's own `coalesceSeconds` replaces it. |
 | `events.maxRunsPerHour` | Most event-started runs of one job in any hour; past that, events wait and run together. Default 6; `0` means no cap. |
 
 ## How runs work
@@ -257,7 +258,7 @@ echo '{"subject": "hi"}' | dsh-cron-event mail.me --data -
 
 It writes one file into the plugin's inbox, `$DSH_HOME/cron-jobs/events/` (mode 700), and waits up to ten seconds for DSH to take it, printing the ids of the jobs it matched. No port, token or network path into DSH is needed, and an event written while DSH is down waits there and is taken at the next start. `--id <key>` drops a second event with the same channel and key within an hour; `--no-wait` returns at once; `--text` sends plain text instead of JSON. Exit code 3 means DSH did not take it in time (it stays queued). The CLI is in the profile's `node_modules/.bin`; link it somewhere on `PATH` to call it by name.
 
-**What a run sees.** Events for one job that arrive within `events.coalesceSeconds` (30 s) of the first one are gathered, and the job runs once with all of them:
+**What a run sees.** Events for one job that arrive within its window, counted from the first one, are gathered, and the job runs once with all of them. The window is the job's own `coalesceSeconds` (set it to 900 for a mailbox that is fine to read every quarter of an hour, or 0 to run at once), or `events.coalesceSeconds` (30 s) for a job without one:
 
 - The command gets them on stdin as one JSON document, `{"trigger": "event", "events": [{"channel", "at", "data" or "text", "key", "source"}], "dropped": 0}`, and every command gets `DSH_CRON_TRIGGER` (`schedule`, `manual` or `event`) and `DSH_CRON_JOB` in its environment. A gate still decides whether to wake the agent.
 - The agent prompt gets the events appended, one JSON line each, in a block marked as untrusted data from outside DSH. An event is a hint: the job should read the truth from its source (the mailbox, the CI run), so a forged or garbled event costs one wasted run, and a message's subject never reaches the agent as an instruction.
@@ -300,8 +301,8 @@ The `cron-jobs-tools` row registers five tools. Their names start with `cron_job
 
 | Tool | What it does |
 |---|---|
-| `cron_job_create` | Create a job: a title, a prompt and/or a command, one of `cron`, `rrule` and `at` (with `timeZone` where needed) and/or `on` (event channels), where the prompt goes, and optionally `once`, where the result is delivered and which model its sessions use. |
-| `cron_job_edit` | `update` the given fields, `pause`, `resume` (continues from now), or `delete` a job by id. An empty `cron`, `rrule` or `at` removes the schedule of a job with `on`; an empty `on` removes its subscriptions. `prompt_replace` and `command_replace` change the text in place; see below. |
+| `cron_job_create` | Create a job: a title, a prompt and/or a command, one of `cron`, `rrule` and `at` (with `timeZone` where needed) and/or `on` (event channels), where the prompt goes, and optionally `once`, `coalesceSeconds` (the event window), where the result is delivered and which model its sessions use. |
+| `cron_job_edit` | `update` the given fields, `pause`, `resume` (continues from now), or `delete` a job by id. An empty `cron`, `rrule` or `at` removes the schedule of a job with `on`; an empty `on` removes its subscriptions. `coalesceSeconds` sets the event window; a negative number removes it, so the row's setting applies again. `prompt_replace` and `command_replace` change the text in place; see below. |
 | `cron_job_list` | Every job, from the config and from tools, with its id, state, schedule, next run, target and last run. |
 | `cron_job_view` | One job's full definition and its five latest runs. |
 | `cron_job_watch` | `create`, `delete` or `list` [watchers](#watchers). |
@@ -361,7 +362,7 @@ All three are kept in DSH's storage domain service under the domain `cron_jobs` 
 }
 ```
 
-`schedule` is `{ "kind": "cron", "expression", "timeZone" }`, `{ "kind": "rrule", "rrule" }` or `{ "kind": "at", "at" }` (a UTC instant); `target` is `{ "kind": "new" }`, `{ "kind": "new_once", "sessionId"? }` or `{ "kind": "session", "sessionId" }`; `status` is `active`, `paused` or `ended`; `command`, `timeoutSeconds`, `model` (`{ "provider", "model", "reasoningEffort"? }`) and `deliver` (`{ "via", "to" }` or `false`; the default when missing) are optional. `scheduledAt` is the next run.
+`schedule` is `{ "kind": "cron", "expression", "timeZone" }`, `{ "kind": "rrule", "rrule" }` or `{ "kind": "at", "at" }` (a UTC instant); `target` is `{ "kind": "new" }`, `{ "kind": "new_once", "sessionId"? }` or `{ "kind": "session", "sessionId" }`; `status` is `active`, `paused` or `ended`; `command`, `timeoutSeconds`, `coalesceSeconds`, `model` (`{ "provider", "model", "reasoningEffort"? }`) and `deliver` (`{ "via", "to" }` or `false`; the default when missing) are optional. `scheduledAt` is the next run.
 
 For run history and pausing:
 
