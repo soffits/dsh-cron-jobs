@@ -184,6 +184,9 @@ export async function archiveWhenIdle(ctx, sessionId, {
     // A failed turn still ends the activity; its error belongs to the session.
     await agent.whenIdle().catch(() => {})
     if (signal?.aborted) return { archive: 'pending' }
+    // A turn DSH's own stop cut off is unfinished work: dsh-restart-resume finds it after the
+    // restart only in a session that is not archived, and the rerun's own run archives it later.
+    if (turnCutByShutdown(agent.session?.log ?? [])) return { archive: 'kept', note: 'its turn was cut off by a DSH stop' }
     const result = await lock(async () => {
       if (!isLatest()) return { archive: 'superseded' }
       const hold = userHold(ctx, sessionId, agent.session)
@@ -202,6 +205,18 @@ export async function archiveWhenIdle(ctx, sessionId, {
     await sleep(retryMs, signal)
     if (signal?.aborted) return { archive: 'pending' }
   }
+}
+
+/** Whether the session's last turn ended because DSH stopped (aborted `disposed`) or died (`interrupted`). */
+export function turnCutByShutdown(log) {
+  for (let i = log.length - 1; i >= 0; i -= 1) {
+    if (log[i]?.type === 'turn/start') return false
+    if (log[i]?.type !== 'turn/end') continue
+    const reason = log[i].data?.reason
+    const kind = reason?.kind === 'aborted' ? reason.reason?.kind : reason?.kind
+    return kind === 'disposed' || kind === 'interrupted'
+  }
+  return false
 }
 
 /** Time between checks while a prompt waits for its turn to end. */

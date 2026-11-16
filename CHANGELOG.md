@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.1
+
+- A job's session whose turn DSH's stop cut off is no longer auto-archived: it is unfinished, and dsh-restart-resume (which leaves archived sessions alone) could not hand it back for the rerun. The rerun's own run archives it when it ends.
+
 ## 0.13.0
 
 - A run whose turn a DSH restart cut off is rerun when dsh-restart-resume (0.4.0 or later) hands the cut turn back, instead of by the plugin's own timer 30 s after start. One plugin now finds every cut turn, from DSH's log; this one keeps the rerun limits and the delivery. Without dsh-restart-resume, cut-off runs are recorded but not rerun.
