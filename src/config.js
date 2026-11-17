@@ -57,6 +57,11 @@ const Events = z.object({
   maxRunsPerHour: z.natural().default(DEFAULT_MAX_RUNS_PER_HOUR).description('Most event-started runs of one job in any hour; past that, events wait and run together. 0 means no cap.'),
 })
 
+const Problems = z.object({
+  channel: z.string().description('Also emit every problem note (a failed command or gate, a failed wake or rerun, a watcher down or back) as an event on this channel, such as cron.problem, so a job with on: [cron.problem] can handle it. A run this channel started never emits one. Empty: no event.'),
+  deliver: z.union([z.const(false), DeliveryTarget]).description('Where problem notes are sent instead of the job\'s own target (or, for watchers, the plugin\'s deliver). false sends none when a job took the event on channel; a note no job took still goes to the job\'s target. Unset: the job\'s target, as before.'),
+}).description('Where notes about failures go, so they can reach whoever fixes them rather than every job\'s audience.')
+
 export const Config = z.object({
   jobs: z.array(Job).default([]).description('Scheduled jobs.'),
   watchers: z.array(Watcher).default([]).description('Long-running commands whose output lines are events (see a job\'s on). Watchers can also be added from a conversation with the watch tool.'),
@@ -65,6 +70,7 @@ export const Config = z.object({
   autoArchive: z.boolean().default(true).description('Archive woken sessions once their turn ends, for jobs that do not set agent.autoArchive. Archived sessions leave the sidebar\'s active list but stay in DSH and in session search.'),
   reuseWithinHours: z.number().min(0).default(0).description('Reuse window for jobs that do not set agent.reuseWithinHours: send the prompt into the job\'s previous woken session when it was opened within this many hours. 0 always opens a new session.'),
   deliver: DeliveryTarget.description('Default delivery target for jobs that do not set deliver. Jobs that post into an existing session do not use it. Unset: results are not delivered.'),
+  problems: Problems,
   historyRecords: z.natural().min(1).max(1000).default(DEFAULT_HISTORY_RECORDS)
     .description('Runs kept per job for the Cron tasks page (start, duration, exit code, woken session, output tails). Older runs are dropped.'),
   runLog: z.string().description('JSON Lines file that gets one line when a run starts and one when it ends (outcome, exit code, duration, output tails), so past runs can be checked later. Directories are created as needed. No file when empty.'),

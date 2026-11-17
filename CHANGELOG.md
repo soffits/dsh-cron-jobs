@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A row-level `problems` setting decides where failure notes go: `problems.channel` emits each one (failed command or gate, failed wake or rerun, watcher down or back) as an event an agent job can take with `on`, and `problems.deliver` sends them to their own target, or with `false` nowhere once a job took the event. Unset, notes go to the job's target as before.
 - A job that wakes an agent right after a DSH start (a catch-up run, a watcher event) waits for the session services instead of failing with "no sessionController service". Opening a session and posting into an existing one now wait the way archiving and answer lookup already did, for every service they use.
 
 ## 0.14.0

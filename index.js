@@ -32,7 +32,7 @@ export { Config }
 
 /**
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ jobs: import('./src/job.js').Job[], watchers?: object[], events?: { coalesceSeconds?: number, maxRunsPerHour?: number }, runLog?: string, historyRecords?: number, defaultAgentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: { via?: string, to?: string } }} config
+ * @param {{ jobs: import('./src/job.js').Job[], watchers?: object[], events?: { coalesceSeconds?: number, maxRunsPerHour?: number }, runLog?: string, historyRecords?: number, defaultAgentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: { via?: string, to?: string }, problems?: { channel?: string, deliver?: { via?: string, to?: string } | false } }} config
  */
 export function apply(ctx, config) {
   const logger = ctx.logger('cron-jobs')
@@ -84,6 +84,7 @@ export function apply(ctx, config) {
           autoArchive: config.autoArchive ?? true,
           reuseWithinHours: config.reuseWithinHours ?? 0,
           deliver: config.deliver,
+          problems: config.problems,
         },
         signal: controller.signal,
         record,

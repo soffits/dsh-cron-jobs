@@ -119,6 +119,8 @@ Next to `jobs`, the row also takes:
 | `autoArchive` | Default for `agent.autoArchive`. Default `true`. |
 | `reuseWithinHours` | Default for `agent.reuseWithinHours`. Default `0`. |
 | `deliver` | Default delivery target, `{ via, to }`, for jobs that do not set `deliver`. Unset: results are not delivered. |
+| `problems.channel` | Also emit every problem note as an event on this channel, so an agent job with `on: [<channel>]` can handle it. See [Problem notes](#problem-notes). |
+| `problems.deliver` | Where problem notes are sent instead of the job's own target: `{ via, to }`, or `false` for none once a job took the event. Unset: the job's target, as before. |
 | `historyRecords` | Runs kept per job for the Cron tasks page. Default 50, at most 1000. |
 | `runLog` | Optional JSON Lines file of run starts and ends, see below. |
 | `watchers` | Long-running commands whose output lines are events: `[{ id, channel, command, cwd, enabled }]`. See [Watchers](#watchers). |
@@ -166,6 +168,29 @@ A job with a delivery target sends its result when a run is over:
 Where results go is decided per job: its own `deliver` (or `false`), otherwise nothing for jobs that post into an existing session (`agent.sessionId`, or the tools' `this_session` / `sessionId`), since the answer is already in that conversation, otherwise the row's `deliver`. A run stopped because DSH is shutting down delivers nothing.
 
 Each run's delivery shows on the Cron tasks page and in the run log: not sent yet (waiting for the answer or for the channel), sent, nothing to send, or not sent with the reason. A delivery still waiting when DSH stops or the plugin reloads, whether for a turn that is still running or for a channel that is not there, is picked up and delivered after the next start.
+
+### Problem notes
+
+Failure notes (a command or gate that failed, a wake or rerun that failed, a watcher that is down or works again) go to the same place as the job's results unless the row says otherwise. That is the right default when whoever reads results also fixes the jobs. When the results go to someone who should not get raw failures, such as a person reading an agent's reports, the row's `problems` setting sends them elsewhere:
+
+```yaml
+- id: cron-jobs
+  config:
+    deliver: { via: telegramTopics, to: notify }
+    problems:
+      channel: cron.problem   # hand each note to the jobs on this channel
+      deliver: false          # and don't also send it to the job's target
+    jobs:
+      - name: Fix broken jobs
+        on: [cron.problem]
+        agent:
+          prompt: A scheduled job or watcher failed; the note is below. Find the cause and fix it. Tell the owner only what needs them.
+```
+
+- `channel`: each note becomes an event with the note as its text and details as data: `kind` (`command-failed`, `gate-failed`, `wake-failed`, `rerun-failed`, `watcher-down`, `watcher-up`), `job` and `jobId` (or `watcher` and its `channel`), `trigger`, `startedAt`, `error`, `exitCode`, `sessionId` when known, and `text`. Events batch and are capped like any others. A run that this channel started never emits a note on it, so a failing handler can't feed itself.
+- `deliver`: a target sends every note there instead (a log topic, an ops chat), with or without `channel`. `false` sends nothing, but only when a job listening on `channel` took the event; a note no job took (no channel, nobody listening, or the handler's own failure) still goes to the job's target, so a broken job never goes quiet.
+
+Ordinary results are not affected. Both are off by default.
 
 ### Runs cut off by a restart
 
@@ -270,7 +295,7 @@ A watcher is a long-running command the plugin starts with the scheduler, restar
 - any other non-empty line is the event's text;
 - `{"wakeAgent": false}` lines are ignored.
 
-A watcher that exits is restarted after 1 s, doubling up to 5 minutes, and back to 1 s once a run lasted a minute. If it has not managed to stay up for a minute in 15 minutes, one note goes to the row's `deliver` target, and one more when it works again; exits, stderr tails and these notes are in the run log. The command runs with `bash -c` in its own process group, with `DSH_CRON_WATCHER` (its id), `DSH_CRON_CHANNEL` and `DSH_CRON_STATE_DIR` (`$DSH_HOME/cron-jobs/watchers/<id>`, a directory for its cursor) in its environment.
+A watcher that exits is restarted after 1 s, doubling up to 5 minutes, and back to 1 s once a run lasted a minute. If it has not managed to stay up for a minute in 15 minutes, one note goes to the row's `deliver` target (or as set by [`problems`](#problem-notes)), and one more when it works again; exits, stderr tails and these notes are in the run log. The command runs with `bash -c` in its own process group, with `DSH_CRON_WATCHER` (its id), `DSH_CRON_CHANNEL` and `DSH_CRON_STATE_DIR` (`$DSH_HOME/cron-jobs/watchers/<id>`, a directory for its cursor) in its environment.
 
 Watchers come from the row's `watchers` list, or from a conversation with the `cron_job_watch` tool (`create`, `delete`, `list`), which keeps them in DSH storage. A tool-made watcher can be `once`: it runs one time and removes itself when it exits, for a one-off wait that has to survive a DSH restart:
 

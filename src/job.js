@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { decideWake } from './wake.js'
-import { commandResultText, cutOff, describeTarget, messageFromText, resolveDelivery } from './deliver.js'
+import { commandResultText, cutOff, deliveryTarget, describeTarget, messageFromText, resolveDelivery } from './deliver.js'
 import { buildAgentPrompt, buildRerunPrompt, formatLocalTime, sessionTitle } from './prompt.js'
 import { HISTORY_TAIL_CHARS } from './history.js'
 import { batchSummary, eventInput } from './events.js'
@@ -105,14 +105,15 @@ export class JobRunner {
    * @param {(sessionId: string, options: { signal?: AbortSignal, isLatest: () => boolean, lock: Function }) => Promise<{ archive: string, note?: string }>} [deps.settle] - Archives a session after its turn (see session.js archiveWhenIdle); without it nothing is archived.
    * @param {(target: { via: string, to: string }, message: { text: string, files: string[] }, from: { job: string, sessionId?: string }, options: { waitMs?: number, onWait?: Function }) => Promise<{ status: 'sent' | 'failed' | 'unavailable' | 'stopped', attempts: number, error?: string }>} [deps.send] - Hands a result to its delivery service (see deliver.js sendMessage); without it nothing is delivered.
    * @param {(sessionId: string, messageId: string, options: { signal?: AbortSignal }) => Promise<{ pending: true } | { text: string, reason?: string } | { error: string }>} [deps.answer] - Waits for the final answer to a prompt (see session.js waitForAnswer).
-   * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object }} [deps.defaults] - Plugin-level agent settings and the default delivery target.
+   * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object, problems?: { deliver?: object | false } }} [deps.defaults] - Plugin-level agent settings, the default delivery target, and where problem notes go.
+   * @param {(problem: object, triggers: string[]) => boolean} [deps.reportProblem] - Emits a problem note as an event (see CronJobs.reportProblem); true when a job took it.
    * @param {{ info: Function, warn: Function }} deps.logger
    * @param {AbortSignal} [deps.signal] - Stops a running command when aborted.
    * @param {(entry: object) => Promise<void>} [deps.record] - Appends a run record (see runlog.js).
    * @param {{ begin: Function, finish: Function }} [deps.history] - Saved run history (see history.js).
    * @param {() => Date} [deps.now]
    */
-  constructor(job, { run, wake, reuse, keepSession, settle, send, answer, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
+  constructor(job, { run, wake, reuse, keepSession, settle, send, answer, reportProblem, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
     this.job = job
     this.send = send
     this.answer = answer
@@ -120,6 +121,7 @@ export class JobRunner {
     this.keepSession = keepSession
     this.settle = settle
     this.defaults = defaults
+    this.reportProblem = reportProblem
     /** Latest run that sent a prompt to each session; only that run archives it. */
     this.latestRun = new Map()
     /** Per-session queue that keeps a delivery and an archive from overlapping. */
@@ -245,28 +247,60 @@ export class JobRunner {
    * nothing.
    */
   async deliverResult({ messageId, ...outcome }, result, { rerun = false } = {}) {
-    const target = this.deliveryTarget()
-    if (target === undefined) return outcome
     const { job } = this
-    const where = { via: target.via, to: target.to }
     if (outcome.status === 'woke') {
-      if (outcome.turn?.status !== 'pending') return outcome
-      return { ...outcome, delivery: { status: 'pending', ...where } }
+      const target = this.deliveryTarget()
+      if (target === undefined || outcome.turn?.status !== 'pending') return outcome
+      return { ...outcome, delivery: { status: 'pending', via: target.via, to: target.to } }
     }
     let text
+    let problem
     if (outcome.status === 'wake-failed') {
+      problem = rerun ? 'rerun-failed' : 'wake-failed'
       text = rerun
         ? `⚠️ ${job.name}: the run cut off by a DSH restart could not run again: ${outcome.error}`
         : `⚠️ ${job.name}: could not wake the agent: ${outcome.error}`
     }
-    else if (result !== undefined && !result.aborted && (outcome.status === 'done' || outcome.status === 'failed')) text = commandResultText(job, result)
+    else if (result !== undefined && !result.aborted && (outcome.status === 'done' || outcome.status === 'failed')) {
+      text = commandResultText(job, result)
+      if (!result.ok) problem = isGated(job) ? 'gate-failed' : 'command-failed'
+    }
     else return outcome
+    const target = problem === undefined ? this.deliveryTarget() : this.problemTarget(problem, text, outcome, result)
+    if (target === undefined) return outcome
+    const where = { via: target.via, to: target.to }
     const message = messageFromText(text, job.cwd || undefined)
     if (message === undefined) return { ...outcome, delivery: { status: 'silent', ...where } }
     // No waiting inside the run: a missing service is waited for in the
     // background (see watchDelivery), with the message kept for a restart.
     const delivery = await this.deliverMessage(target, message, { waitMs: 0 })
     return { ...outcome, delivery: delivery.status === 'pending' ? { ...delivery, message } : delivery }
+  }
+
+  /**
+   * Where a problem note (a failed command or gate, a failed wake or rerun)
+   * goes, after handing it to the problems channel. Without a `problems`
+   * setting, the job's own target. `problems.deliver` set to a target sends
+   * it there instead; set to false sends nothing, but only when a job took
+   * the event, so a problem nobody handles still reaches the job's target.
+   */
+  problemTarget(kind, text, outcome, result) {
+    const { job, current } = this
+    const handled = this.reportProblem?.({
+      kind,
+      job: job.name,
+      jobId: jobKey(job),
+      trigger: current?.rerunOf ? 'rerun' : current?.trigger ?? 'schedule',
+      ...(current?.startedAt ? { startedAt: current.startedAt } : {}),
+      ...(outcome.sessionId ? { sessionId: outcome.sessionId } : {}),
+      ...(outcome.error ? { error: outcome.error } : {}),
+      ...(result ? { exitCode: result.exitCode ?? null } : {}),
+      text,
+    }, current?.events?.channels ?? []) === true
+    const routed = deliveryTarget(this.defaults.problems?.deliver)
+    if (routed === undefined) return this.deliveryTarget()
+    if (routed === false) return handled ? undefined : this.deliveryTarget()
+    return this.send === undefined ? undefined : routed
   }
 
   /**

@@ -70,7 +70,7 @@ export class CronJobs {
    * @param {Function} [options.settle] - Archives a session after its turn.
    * @param {Function} [options.send] - Hands a result to its delivery service (see deliver.js sendMessage).
    * @param {Function} [options.answer] - Waits for a woken agent's final answer (see session.js waitForAnswer).
-   * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object }} [options.defaults] - Plugin-level agent settings and default delivery target.
+   * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object, problems?: { channel?: string, deliver?: object | false } }} [options.defaults] - Plugin-level agent settings, default delivery target, and where problem notes go (see reportProblem).
    * @param {AbortSignal} [options.signal] - Stops running commands when aborted.
    * @param {(entry: object) => Promise<void>} [options.record] - Run log, see runlog.js.
    * @param {import('./history.js').HistoryStore} [options.history] - Saved runs, pause state and stored jobs.
@@ -96,7 +96,7 @@ export class CronJobs {
     this.watchdogMs = watchdogMs
     this.overdueMs = overdueMs
     this.record = record ?? (async () => {})
-    this.deps = { run, wake, reuse, settle, send, answer, defaults, logger, signal, record, history, now }
+    this.deps = { run, wake, reuse, settle, send, answer, defaults, logger, signal, record, history, now, reportProblem: (problem, triggers) => this.reportProblem(problem, triggers) }
     this.eventSettings = {
       coalesceMs: (events.coalesceSeconds ?? DEFAULT_COALESCE_SECONDS) * 1000,
       maxRunsPerHour: events.maxRunsPerHour ?? DEFAULT_MAX_RUNS_PER_HOUR,
@@ -237,7 +237,7 @@ export class CronJobs {
       emit: event => this.emit(event),
       logger: this.logger,
       record: this.record,
-      notify: (text, def) => this.notifyDefault(text, `watcher ${def.id}`),
+      notify: (text, def, kind) => this.notifyProblem(text, { kind, watcher: def.id, channel: def.channel }),
       onDone: id => this.watcherDone(id),
     })
     this.supervisor.set(this.watcherDefinitions())
@@ -253,13 +253,41 @@ export class CronJobs {
     return defs
   }
 
-  /** Send a note to the plugin's default delivery target, if there is one. */
-  async notifyDefault(text, from) {
-    const target = resolveDelivery({}, this.defaults.deliver)
-    if (target === undefined || this.deps.send === undefined) {
-      this.logger.warn('%s: %s (no delivery target)', from, text)
+  /**
+   * Hand a problem note to the jobs on the `problems.channel` setting, as an
+   * event with the note as text and the details as data. Not emitted for a
+   * run that this channel started, so a failing handler cannot feed itself.
+   * @param {{ kind: string, text: string }} problem
+   * @param {string[]} [triggers] - Event channels that started the failed run.
+   * @returns {boolean} Whether a job listening on the channel took it.
+   */
+  reportProblem(problem, triggers = []) {
+    const channel = this.defaults.problems?.channel?.trim()
+    if (!channel || this.stopped || triggers.includes(channel)) return false
+    try {
+      return this.emit({ channel, source: 'cron-jobs', text: problem.text, data: problem }).matched.length > 0
+    } catch (error) {
+      this.logger.warn('problem note not emitted on %s: %s', channel, error instanceof Error ? error.message : String(error))
+      return false
+    }
+  }
+
+  /**
+   * A watcher's down or back-up note: emitted on the problems channel, and
+   * sent to `problems.deliver` or the plugin's default target (see
+   * JobRunner.problemTarget for the same rule).
+   */
+  async notifyProblem(text, details) {
+    const from = `watcher ${details.watcher}`
+    const handled = this.reportProblem({ ...details, text })
+    const routed = deliveryTarget(this.defaults.problems?.deliver)
+    const fallback = resolveDelivery({}, this.defaults.deliver)
+    const target = routed === undefined ? fallback : routed === false ? (handled ? undefined : fallback) : routed
+    if (target === undefined) {
+      if (!handled) this.logger.warn('%s: %s (no delivery target)', from, text)
       return
     }
+    if (this.deps.send === undefined) return
     const sent = await this.deps.send(target, { text, files: [] }, { job: from }, {})
     if (sent.status !== 'sent') this.logger.warn('%s: note not delivered: %s', from, sent.error)
   }
