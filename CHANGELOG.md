@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.1
 
 - On touch screens the filter tabs, buttons, menu items and the footer link are at least 40px tall.
 
