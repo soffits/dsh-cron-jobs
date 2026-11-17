@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: a woken session was never archived once another agent session or job had sent it a follow-up (`prompt_session`, `open_session`). DSH marks those messages with source kind `user` like a person's, and the plugin took them for a person taking the session over. It now reads `source.principal` and ignores the agent kinds `dsh-session`, `cron-job` and `external` (the shared kinds `dsh-message-context` tells apart); only the owner in the Web UI or a channel's signed-in sender keeps a session. The session is archived after the turn the follow-up causes.
+
 ## 0.17.0
 
 - Declared sets: `dsh-cron-apply --set <name> --file <jobs.json>` makes a group of stored jobs match a list kept in a file, like `kubectl apply --prune`. New keys are created, changed fields are updated (and only those), members that left the list are removed, and nothing outside the set is touched. `--dry-run` prints the plan. An entry can `adopt` an existing tool-made job so its id and run history carry over. Members show `declared` in the list, view and page data. See "Declared sets" in the README.

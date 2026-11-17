@@ -24,7 +24,7 @@ const Agent = z.object({
   cwd: z.string().description('Working directory of the woken session; the session joins the workspace registered there. Empty: the plugin\'s defaultAgentCwd, then the job\'s cwd, then the host default.'),
   sessionId: z.string().description('Send the prompt into this existing session instead of opening a new one. Empty: open a new session.'),
   model: Model,
-  autoArchive: z.boolean().description('Archive the woken session once its turn ends, unless it is pinned or a person has sent it a message (such a session is also never reused). The plugin\'s autoArchive when unset.'),
+  autoArchive: z.boolean().description('Archive the woken session once its turn ends, unless it is pinned or a person has sent it a message (such a session is also never reused; a message from another agent session or job does not count). The plugin\'s autoArchive when unset.'),
   reuseWithinHours: z.number().min(0).description('Send the prompt into this job\'s previous woken session instead of opening a new one, when that session was opened within this many hours. 0 always opens a new session. The plugin\'s reuseWithinHours when unset.'),
 }).description('Wake an agent: run the command as a gate and open a new session only when its output asks for it.')
 
