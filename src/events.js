@@ -2,7 +2,8 @@
  * Events: named hints from outside DSH (a CLI, a hook, a watcher) that start
  * the jobs subscribed to their channel. An event only says "look now"; the
  * job reads the truth from its source, so a lost or forged event costs at
- * most one missed or wasted run (the job's schedule is the safety net).
+ * most one missed or wasted run. A missed event is a bug in its source to fix there,
+ * not something a timer on the job should cover.
  *
  * - Channels are dot-separated names such as `mail.inbox` or `dsh.started`.
  * - A job's `on` lists channel patterns; `*` matches one or more characters
