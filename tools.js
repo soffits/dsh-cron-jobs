@@ -354,6 +354,7 @@ export function modelJob(job, { brief = false } = {}) {
     ...(job.nextRunAt ? { nextRunAt: job.nextRunAt, nextRunAtLocal: `${formatLocalTime(new Date(job.nextRunAt), zone)}${zone ? ` ${zone}` : ''}` } : { nextRunAt: null }),
     ...(job.on ? { on: job.on } : {}),
     ...(job.once ? { once: true } : {}),
+    ...(job.removesAt ? { removesAt: job.removesAt } : {}),
     ...(job.coalesceEffectiveSeconds !== null && job.coalesceEffectiveSeconds !== undefined ? { coalesceSeconds: job.coalesceEffectiveSeconds, ...(job.coalesceSeconds === null ? { coalesceIsDefault: true } : {}) } : {}),
     ...(job.pendingEvents ? { pendingEvents: job.pendingEvents } : {}),
     ...(job.target ? { target: job.target.sessionId ? `${job.target.kind} ${job.target.sessionId}` : job.target.kind } : {}),

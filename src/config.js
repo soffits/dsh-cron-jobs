@@ -1,6 +1,7 @@
 import z from '@deepseek-ai/schemastery'
 import { DEFAULT_HISTORY_RECORDS } from './history.js'
 import { DEFAULT_COALESCE_SECONDS, DEFAULT_MAX_RUNS_PER_HOUR } from './events.js'
+import { DEFAULT_ENDED_RETENTION_HOURS } from './store.js'
 
 /** Default limit for one run of a job's command. */
 export const DEFAULT_TIMEOUT_SECONDS = 3600
@@ -73,5 +74,7 @@ export const Config = z.object({
   problems: Problems,
   historyRecords: z.natural().min(1).max(1000).default(DEFAULT_HISTORY_RECORDS)
     .description('Runs kept per job for the Cron tasks page (start, duration, exit code, woken session, output tails). Older runs are dropped.'),
+  endedRetentionHours: z.number().min(0).default(DEFAULT_ENDED_RETENTION_HOURS)
+    .description('Hours an ended job (a one-time or bounded schedule with no more runs) stays listed before it is removed, with its run history. Applies to jobs made with the tools; config jobs are never removed. 0 keeps ended jobs until they are deleted by hand. Fractions are fine (0.5 is half an hour).'),
   runLog: z.string().description('JSON Lines file that gets one line when a run starts and one when it ends (outcome, exit code, duration, output tails), so past runs can be checked later. Directories are created as needed. No file when empty.'),
 })

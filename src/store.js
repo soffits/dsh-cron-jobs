@@ -49,6 +49,8 @@ export const storedJobSchema = z.object({
   // Model of the sessions the job opens; omitted uses the preset or host default.
   model: z.object({ provider: z.string().min(1), model: z.string().min(1), reasoningEffort: z.string().min(1).optional() }).optional(),
   status: z.enum(['active', 'paused', 'ended']),
+  // When the job ended; the retention of ended jobs counts from here.
+  endedAt: z.string().optional(),
   // Next run; kept so a run missed while DSH was down happens once at startup.
   scheduledAt: z.string().optional(),
   createdAt: z.string(),
@@ -58,6 +60,9 @@ export const storedJobSchema = z.object({
 })
 
 /** @typedef {z.infer<typeof storedJobSchema>} StoredJob */
+
+/** Hours an ended stored job stays listed before it is removed. 0 keeps it. */
+export const DEFAULT_ENDED_RETENTION_HOURS = 24
 
 /** Watchers created with the tools (watchers.js); `watchers` table. */
 export const storedWatcherSchema = z.object({
