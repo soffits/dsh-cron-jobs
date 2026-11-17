@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.21.1
+
+- Fixed: a job with a clock and an event trigger (or two events a moment apart) woke a second agent session for the same work while the first was still on its turn. A job now counts as working until the session it woke ends its turn. A scheduled tick in that time is skipped (logged as `skipped`, `reason: session-working`), and events wait and run together once the turn ends, so a gate sees what the first session already handled. Run now and reruns are not held.
+- Fixed: a tick skipped this way (or because a run was going) no longer ends a `once` job.
+
 ## 0.21.0
 
 - Built-in events `dsh.turn.started` and `dsh.turn.ended` (any session's turn, `data.sessionId`), sent only while a job listens, so a view of what is running can follow the sessions instead of polling them.
