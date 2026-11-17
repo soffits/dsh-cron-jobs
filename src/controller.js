@@ -745,7 +745,8 @@ export class CronJobs {
       if (patch.timeoutSeconds === null) delete next.timeoutSeconds
       else next.timeoutSeconds = patch.timeoutSeconds
     }
-    if (patch.declared !== undefined) next.declared = { set: patch.declared.set, key: patch.declared.key }
+    if (patch.declared === null) delete next.declared
+    else if (patch.declared !== undefined) next.declared = { set: patch.declared.set, key: patch.declared.key }
     if (patch.schedule !== undefined) {
       const schedule = changedSchedule(current.schedule, patch.schedule)
       if (schedule === null) {
@@ -819,6 +820,25 @@ export class CronJobs {
     await this.record({ time: this.now().toISOString(), job: null, event: 'declared', set, created: summary.create.length, updated: summary.update.length, adopted: summary.adopt.length, removed: summary.remove.length })
     this.logger.info('[declared %s] %d created, %d updated, %d adopted, %d removed, %d unchanged', set, summary.create.length, summary.update.length, summary.adopt.length, summary.remove.length, summary.unchanged)
     return summary
+  }
+
+  /**
+   * Let go of a declared set: every member becomes an ordinary stored job
+   * (same id, history, schedule, next run and pause state), and later applies
+   * of the set no longer see it. Nothing is deleted. `dryRun` only lists.
+   * @param {{ set: string, dryRun?: boolean }} input
+   * @returns {Promise<{ set: string, dryRun: boolean, release: { id: string, key: string, title: string }[] }>}
+   */
+  async releaseDeclared({ set, dryRun = false }) {
+    const store = this.requireStore()
+    checkSetName(set)
+    const members = store.all().filter(record => record.declared?.set === set)
+    const release = members.map(record => ({ id: record.id, key: record.declared.key, title: record.title }))
+    if (dryRun) return { set, dryRun, release }
+    for (const item of release) await this.update(item.id, { declared: null })
+    await this.record({ time: this.now().toISOString(), job: null, event: 'declared-released', set, released: release.length })
+    this.logger.info('[declared %s] released %d jobs', set, release.length)
+    return { set, dryRun, release }
   }
 
   /**

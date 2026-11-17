@@ -385,6 +385,8 @@ The file is a JSON list of jobs (or `{ "jobs": [...] }`); `--file -` reads stdin
 
 Members are ordinary stored jobs: they catch up, keep history and show on the page and in `cron_job_list`, marked `declared: <set>/<key>`. The tools can still change them (a script that moves a job's time zone, a quick pause), and the next apply puts back whatever differs from the file; a `--dry-run` with no changes to the file shows such drift. The request travels through a file inbox under `$DSH_HOME/cron-jobs/requests` (no port or token). A request DSH does not take within `--timeout` (default 30 s) is withdrawn, and one older than ten minutes is refused, so an old list is never applied after a restart.
 
+To stop keeping a set in a file, release it: `dsh-cron-apply --set home --release` (with `--dry-run` to list first). Every member becomes an ordinary stored job with the same id, run history, schedule and pause state, and no later apply sees it; nothing is deleted.
+
 Exit codes: 0 done, 1 refused (nothing changed; the reason is on stderr), 2 bad arguments, 3 DSH did not answer in time.
 
 ## Cron tasks page
