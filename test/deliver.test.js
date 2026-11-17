@@ -170,7 +170,7 @@ test('a command job delivers its stdout, with MEDIA files resolved in its direct
   const { runner, sent, run } = deliverySetup({ name: 'Digest', command: 'x', cwd: '/srv' }, { result: ok('Morning\nMEDIA:d.md\n') })
   const outcome = await runner.tick()
   assert.equal(outcome.delivery.status, 'sent')
-  assert.deepEqual(sent, [{ target: NOTIFY, message: { text: 'Morning', files: ['/srv/d.md'] }, from: { job: 'Digest', jobId: 'Digest' } }])
+  assert.deepEqual(sent, [{ target: NOTIFY, message: { text: 'Morning', files: ['/srv/d.md'] }, from: { job: 'Digest', jobId: 'Digest', runId: run().id } }])
   assert.equal(run().delivery.status, 'sent')
   assert.equal(run().delivery.via, 'chat')
 })
@@ -223,7 +223,7 @@ test('a woken agent\'s final answer is delivered once its turn ends, naming the 
   assert.match(wakes[0].text, /Your final answer is delivered to notify through chat/)
   assert.deepEqual(asked, [{ sessionId: 'session-w', messageId: wakes[0].messageId }])
   await drain(runner)
-  assert.deepEqual(sent, [{ target: NOTIFY, message: { text: 'Hello there', files: ['/home/me/pic.png'] }, from: { job: 'Check-in', jobId: 'Check-in', sessionId: 'session-w' } }])
+  assert.deepEqual(sent, [{ target: NOTIFY, message: { text: 'Hello there', files: ['/home/me/pic.png'] }, from: { job: 'Check-in', jobId: 'Check-in', sessionId: 'session-w', runId: run().id } }])
   assert.equal(run().delivery.status, 'sent')
   assert.equal(records.at(-1).event, 'delivery')
 })
@@ -272,7 +272,7 @@ test('a delivery left pending by an unloaded copy is finished on the next start'
     CronClass: class { nextRun() { return null } stop() {} },
   }).start()
   await drain(controller.entries.get('Check-in').runner)
-  assert.deepEqual(sent, [{ target: NOTIFY, message: { text: 'answer to m-old in session-old', files: [] }, from: { job: 'Check-in', jobId: 'Check-in', sessionId: 'session-old' } }])
+  assert.deepEqual(sent, [{ target: NOTIFY, message: { text: 'answer to m-old in session-old', files: [] }, from: { job: 'Check-in', jobId: 'Check-in', sessionId: 'session-old', runId: id } }])
   assert.equal(history.runs('Check-in')[0].delivery.status, 'sent')
 })
 
@@ -426,7 +426,7 @@ for (const [kind, job, text, sessionId] of [
     await until(() => run().delivery.status !== 'pending')
     await drain(second.runner(job.name))
 
-    assert.deepEqual(sent, [{ to: 'notify', text, files: [], from: { job: job.name, jobId: job.id ?? job.name, ...(sessionId ? { sessionId } : {}) } }])
+    assert.deepEqual(sent, [{ to: 'notify', text, files: [], from: { job: job.name, jobId: job.id ?? job.name, ...(sessionId ? { sessionId } : {}), runId: run().id } }])
     assert.equal(run().delivery.status, 'sent')
     assert.equal(run().delivery.message, undefined)
     const deliveryLines = records.filter(entry => entry.event === 'delivery').map(entry => entry.status)
@@ -463,4 +463,19 @@ test('a delivery whose channel never comes back fails after the wait; a permanen
   assert.equal(outcome.delivery.status, 'failed')
   assert.equal(outcome.delivery.error, 'unknown topic')
   assert.equal(tries, 1)
+})
+
+test('a delivery runs where its result came from: the command job\'s directory, or the woken session\'s', async () => {
+  const cwds = []
+  const watch = (runner) => {
+    const send = runner.send
+    runner.send = (target, message, from, options) => { cwds.push(options.cwd); return send(target, message, from, options) }
+    return runner
+  }
+  const command = deliverySetup({ name: 'Digest', command: 'x', cwd: '/srv' }, { result: ok('Morning') })
+  await watch(command.runner).tick()
+  const agent = deliverySetup({ name: 'Check-in', agent: { prompt: 'p', cwd: '/home/me' } }, { answer: async () => ({ text: 'Hi', reason: 'completed' }) })
+  await watch(agent.runner).tick()
+  await drain(agent.runner)
+  assert.deepEqual(cwds, ['/srv', '/home/me'])
 })

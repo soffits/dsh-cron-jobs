@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- A built-in `command` channel: `deliver: { via: command, to: <command line> }` (or `command:<command line>` in the tools and declared sets) hands a job's result to a shell command instead of a plugin, so a notification router, a mailer or any CLI can take job results. The command gets the same JSON a channel service gets on stdin, runs in the directory the result came from, and exit 0 counts as sent; other exits are retried like a failing service. See "The command channel" in the README.
+- Deliveries now carry `runId` in `from`, the run the result belongs to, so a channel can tell a resent result from a new one.
+
 ## 0.17.1
 
 - Fixed: a woken session was never archived once another agent session or job had sent it a follow-up (`prompt_session`, `open_session`). DSH marks those messages with source kind `user` like a person's, and the plugin took them for a person taking the session over. It now reads `source.principal` and ignores the agent kinds `dsh-session`, `cron-job` and `external` (the shared kinds `dsh-message-context` tells apart); only the owner in the Web UI or a channel's signed-in sender keeps a session. The session is archived after the turn the follow-up causes.

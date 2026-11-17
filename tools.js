@@ -9,6 +9,7 @@
  */
 import z from '@deepseek-ai/schemastery'
 import { formatLocalTime } from './src/prompt.js'
+import { channelProblem } from './src/channels.js'
 
 export const name = 'dsh-cron-jobs-tools'
 export const inject = ['tools']
@@ -44,7 +45,7 @@ export function toolSchemas(prefix) {
     },
     sessionId: { type: 'string', description: 'Deliver to this other existing session instead of target.' },
     cwd: { type: 'string', description: 'Working directory of the command and of new sessions; defaults to this session\'s.' },
-    deliver: { type: 'string', description: 'Where each run\'s result is sent: "<service>:<address>", a DSH service that delivers messages and an address it understands (such as telegramTopics:notify), or "none". The result is the agent\'s final answer (exactly [SILENT] sends nothing; MEDIA:<path> lines become attachments), or for a job without a prompt the command\'s stdout and failures. Defaults to the plugin\'s default target, or none when the prompt goes to an existing session.' },
+    deliver: { type: 'string', description: 'Where each run\'s result is sent: "<service>:<address>", a DSH service that delivers messages and an address it understands (such as telegramTopics:notify), "command:<command line>" to hand the result to a shell command as JSON on stdin, or "none". The result is the agent\'s final answer (exactly [SILENT] sends nothing; MEDIA:<path> lines become attachments), or for a job without a prompt the command\'s stdout and failures. Defaults to the plugin\'s default target, or none when the prompt goes to an existing session.' },
     on: {
       type: 'array',
       items: { type: 'string' },
@@ -270,8 +271,8 @@ function parseDeliver(ctx, value) {
   const via = (colon === -1 ? raw : raw.slice(0, colon)).trim()
   const to = colon === -1 ? '' : raw.slice(colon + 1).trim()
   if (!/^[A-Za-z_$][\w$.-]*$/.test(via)) throw codeError('invalid_deliver', `deliver must be "<service>:<address>" or "none", not ${JSON.stringify(value)}.`)
-  const service = ctx?.get?.(via)
-  if (typeof service?.send !== 'function') throw codeError('invalid_deliver', `No running service ${JSON.stringify(via)} can deliver messages.`)
+  const problem = channelProblem({ via, to }, name => ctx?.get?.(name))
+  if (problem) throw codeError('invalid_deliver', `${problem[0].toUpperCase()}${problem.slice(1)}.`)
   return { via, to }
 }
 
