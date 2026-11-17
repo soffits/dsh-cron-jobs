@@ -304,7 +304,7 @@ If the job is still running when its batch is ready, it runs once more as soon a
 
 **`once`** (tools only) ends a job after its first run that was not started by hand. With `on: [dsh.started]` it waits for the next DSH start.
 
-**Built-in event.** `dsh.started` is emitted once per DSH process, when the scheduler first starts (not on a plugin reload). A one-off "check DSH after the restart" job becomes `on: [dsh.started], once: true`, instead of a guessed time.
+**Built-in events.** `dsh.started` is emitted once per DSH process, when the scheduler first starts (not on a plugin reload). A one-off "check DSH after the restart" job becomes `on: [dsh.started], once: true`, instead of a guessed time. `dsh.turn.started` and `dsh.turn.ended` are emitted when a turn starts or ends in any session (subagents and jobs' sessions included), with `data.sessionId`, and only while a job listens on them: a view of what is running follows the sessions instead of polling them. A job that opens sessions itself and listens to these events runs again for its own turns, so listen from a command job that opens none.
 
 **Delivery and safety.** An inbox file is kept (as `.processing`) until every run it started has begun, so a restart in between reads it again. Events from watchers are not kept; each watcher catches up from its own cursor when it starts (below). Either way the job's slower schedule is the safety net for anything missed.
 
