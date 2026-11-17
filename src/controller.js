@@ -199,6 +199,11 @@ export class CronJobs {
     return entry.job.enabled !== false && !this.pausedEntry(entry)
   }
 
+  /** Whether a job that can run now listens on this channel (so a producer can skip an event nobody takes). */
+  listensTo(channel) {
+    return [...this.entries.values()].some(entry => this.listening(entry) && subscribed(entry.job.on, channel))
+  }
+
   /**
    * Take one event: drop a duplicate, hand it to every job listening on its
    * channel, and call `release` once all those runs have started.

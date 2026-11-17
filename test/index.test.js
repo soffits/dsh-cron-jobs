@@ -22,8 +22,10 @@ function makeCtx() {
     },
   }
   const handlers = new Map()
+  const listeners = new Map()
   const ctx = {
     logger,
+    on: (event, handler) => { listeners.set(event, handler) },
     storageDomain,
     effect: (fn) => { effects.push(fn()) },
     get: () => undefined,
@@ -32,7 +34,7 @@ function makeCtx() {
       callback({ connection: { fetch: { register: route => handlers.set(route.path, route) } } })
     },
   }
-  return { ctx, effects, lines, opened, closed, handlers, injected }
+  return { ctx, effects, lines, opened, closed, handlers, injected, listeners }
 }
 
 test('apply opens history, arms jobs, serves the page channel and cleans up', async () => {
@@ -118,5 +120,38 @@ test('the request inbox applies a declared set and refuses an unknown delivery s
   assert.match(refused.error, /nowhere/u)
   const listed = await (await handlers.get(`${CHANNEL}/list`).fetch(new Request('http://dsh.test/', { method: 'POST', body: '{}' }))).json()
   assert.deepEqual(listed.value.jobs.map(view => [view.name, view.declared]), [['Backup', { set: 'home', key: 'backup' }]])
+  await effects[0]()
+})
+
+test('a turn starting or ending in a session is an event, sent only to jobs that listen', async () => {
+  const { ctx, effects, handlers, listeners } = makeCtx()
+  apply(ctx, Config({
+    events: { coalesceSeconds: 0 },
+    jobs: [{ name: 'running', command: 'cat', on: ['dsh.turn.*'] }],
+  }))
+  const list = async () => (await (await handlers.get(`${CHANNEL}/list`).fetch(new Request('http://dsh.test/', { method: 'POST', body: '{}' }))).json())
+  for (let i = 0; i < 100 && !(await list()).ok; i++) await new Promise(resolve => setTimeout(resolve, 20))
+  const onSession = listeners.get('session/event')
+  onSession({ id: 'session-1' }, { type: 'turn/start' })
+  onSession({ id: 'session-1' }, { type: 'assistant/message' })
+  let job
+  for (let i = 0; i < 100; i++) {
+    job = (await list()).value.jobs[0]
+    if (job.lastRun?.status === 'done') break
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  assert.equal(job.lastRun.trigger, 'event')
+  assert.deepEqual(job.lastRun.events, { count: 1, channels: ['dsh.turn.started'] })
+  await effects[0]()
+})
+
+test('no turn event is emitted while no job listens', async () => {
+  const { ctx, effects, handlers, listeners } = makeCtx()
+  apply(ctx, Config({ jobs: [{ name: 'other', command: 'true', on: ['ci.*'] }] }))
+  const list = async () => (await (await handlers.get(`${CHANNEL}/list`).fetch(new Request('http://dsh.test/', { method: 'POST', body: '{}' }))).json())
+  for (let i = 0; i < 100 && !(await list()).ok; i++) await new Promise(resolve => setTimeout(resolve, 20))
+  listeners.get('session/event')({ id: 'session-1' }, { type: 'turn/end' })
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal((await list()).value.jobs[0].lastRun, null)
   await effects[0]()
 })

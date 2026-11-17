@@ -25,6 +25,9 @@ import { createEventSpool } from './src/spool.js'
 import { defaultEventDir, defaultWatcherStateRoot } from './src/events.js'
 import { defaultRequestDir, handleRequest } from './src/requests.js'
 
+/** Built-in events for a session's turns (DSH's `session/event` types `turn/start` and `turn/end`). */
+const TURN_CHANNELS = Object.freeze({ 'turn/start': 'dsh.turn.started', 'turn/end': 'dsh.turn.ended' })
+
 /** Set once per DSH process, so `dsh.started` means a DSH start, not a plugin reload. */
 const STARTED = Symbol.for('@soffits/dsh-cron-jobs/started')
 
@@ -144,6 +147,18 @@ export function apply(ctx, config) {
       await history?.close()
     }
   }, 'cron-jobs.schedule()')
+
+  // A turn starting or ending in any session is an event, so a view of what is running follows the sessions
+  // instead of polling them. Sent only while a job listens, so the run log gets no line for each turn.
+  ctx.on?.('session/event', (session, event) => {
+    const channel = TURN_CHANNELS[event?.type]
+    if (channel === undefined || current?.listensTo(channel) !== true) return
+    try {
+      current.emit({ channel, source: 'dsh', data: { sessionId: session?.id } })
+    } catch (error) {
+      logger.warn('%s not emitted: %s', channel, error instanceof Error ? error.message : String(error))
+    }
+  })
 
   // The Web page's routes; present only in hosts that serve the Web GUI.
   // Exact /api Fetch routes, not connection.rpc.handle: see src/rpc.js.

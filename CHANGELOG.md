@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Built-in events `dsh.turn.started` and `dsh.turn.ended` (any session's turn, `data.sessionId`), sent only while a job listens, so a view of what is running can follow the sessions instead of polling them.
+
 ## 0.20.0
 
 - A job can have its own `maxRunsPerHour` (in `schedule_create` / `schedule_edit`, declared sets and config jobs): the cap on event-started runs in any hour, replacing the row's `events.maxRunsPerHour` for that job; `0` lifts it, `-1` on edit goes back to the row's value. Shown in the list and view as `maxRunsPerHour`.
