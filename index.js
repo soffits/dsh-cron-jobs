@@ -22,6 +22,7 @@ import { openHistory } from './src/history.js'
 import { createRoutes, createRpcHandler } from './src/rpc.js'
 import { createEventSpool } from './src/spool.js'
 import { defaultEventDir, defaultWatcherStateRoot } from './src/events.js'
+import { defaultRequestDir, handleRequest } from './src/requests.js'
 
 /** Set once per DSH process, so `dsh.started` means a DSH start, not a plugin reload. */
 const STARTED = Symbol.for('@soffits/dsh-cron-jobs/started')
@@ -61,6 +62,7 @@ export function apply(ctx, config) {
     let jobs
     let history
     let spool
+    let requests
     const ready = (async () => {
       history = await openHistory(ctx.storageDomain, {
         limit: config.historyRecords, logger, signal: controller.signal,
@@ -107,17 +109,33 @@ export function apply(ctx, config) {
         onError: error => logger.warn('event inbox: %s', error instanceof Error ? error.message : String(error)),
       })
       await spool.start()
+      if (controller.signal.aborted) return
+      // Declared sets from dsh-cron-apply (src/declared.js), one request at a time.
+      requests = createEventSpool({
+        dir: defaultRequestDir(),
+        handle: async (input, ack) => {
+          try {
+            return await handleRequest(jobs, input, { checkDeliver: target => canDeliver(ctx, target) })
+          } finally {
+            ack()
+          }
+        },
+        onError: error => logger.warn('request inbox: %s', error instanceof Error ? error.message : String(error)),
+      })
+      await requests.start()
     })().catch(error => logger.error('cron jobs not started: %s', error instanceof Error ? error.message : String(error)))
     started = ready
     return async () => {
       current = undefined
-      // Stop reading events first, so none reaches a stopping scheduler.
+      // Stop reading events and requests first, so none reaches a stopping scheduler.
       await spool?.stop()
+      await requests?.stop()
       // Stop the timers first so no new run starts with an aborted signal.
       const stopping = jobs?.stop()
       controller.abort()
       await ready
       await spool?.stop()
+      await requests?.stop()
       // Let ended runs save their outcome before the storage closes.
       await (stopping ?? jobs?.stop())
       await history?.close()
@@ -129,4 +147,15 @@ export function apply(ctx, config) {
   ctx.inject(['connection', 'webServer'], (sub) => {
     for (const route of createRoutes(createRpcHandler(() => current))) sub.connection.fetch.register(route)
   })
+}
+
+/** Why a declared job's delivery target can't be used now, or undefined when its service can send. */
+function canDeliver(ctx, target) {
+  let service
+  try {
+    service = ctx.get(target.via)
+  } catch {
+    service = undefined
+  }
+  return typeof service?.send === 'function' ? undefined : `no running service ${JSON.stringify(target.via)} can deliver messages`
 }

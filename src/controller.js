@@ -4,6 +4,7 @@ import { DEFAULT_ENDED_RETENTION_HOURS, JobStore } from './store.js'
 import { deliveryTarget, resolveDelivery } from './deliver.js'
 import { DEFAULT_COALESCE_SECONDS, DEFAULT_MAX_RUNS_PER_HOUR, Deduper, EventBatcher, EventInputError, checkPatterns, normalizeEvent, subscribed } from './events.js'
 import { WatcherInputError, WatcherSupervisor, checkWatcher } from './watchers.js'
+import { checkSetName, planDeclared } from './declared.js'
 
 /** How often the watchdog looks for lost timers. */
 export const WATCHDOG_MS = 60_000
@@ -659,6 +660,9 @@ export class CronJobs {
    * @param {{ kind: 'new' } | { kind: 'new_once' } | { kind: 'session', sessionId: string }} input.target
    * @param {{ via: string, to: string } | false} [input.deliver] - Where results go; the plugin default when omitted.
    * @param {{ provider: string, model: string, reasoningEffort?: string }} [input.model] - Model of the sessions it opens; the preset or host default when omitted.
+   * @param {number} [input.timeoutSeconds] - Command time limit; the plugin default when omitted.
+   * @param {{ set: string, key: string }} [input.declared] - Member of a declared set (see applyDeclared).
+   * @param {boolean} [input.paused] - Create it paused.
    * @param {string} [input.createdBy]
    * @returns {Promise<object>} The job's view.
    * @throws {JobInputError | ScheduleError}
@@ -682,7 +686,9 @@ export class CronJobs {
       target: input.target ?? { kind: 'new' },
       ...(deliveryTarget(input.deliver) !== undefined ? { deliver: deliveryTarget(input.deliver) } : {}),
       ...(input.model !== undefined ? { model: storedModel(input.model) } : {}),
-      status: 'active',
+      ...(input.timeoutSeconds !== undefined ? { timeoutSeconds: input.timeoutSeconds } : {}),
+      ...(input.declared ? { declared: { set: input.declared.set, key: input.declared.key } } : {}),
+      status: input.paused === true ? 'paused' : 'active',
       ...(spec ? { scheduledAt: firstRun(spec, now) } : {}),
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -735,6 +741,11 @@ export class CronJobs {
       if (patch.coalesceSeconds === null) delete next.coalesceSeconds
       else next.coalesceSeconds = coalesceSeconds(patch.coalesceSeconds)
     }
+    if (patch.timeoutSeconds !== undefined) {
+      if (patch.timeoutSeconds === null) delete next.timeoutSeconds
+      else next.timeoutSeconds = patch.timeoutSeconds
+    }
+    if (patch.declared !== undefined) next.declared = { set: patch.declared.set, key: patch.declared.key }
     if (patch.schedule !== undefined) {
       const schedule = changedSchedule(current.schedule, patch.schedule)
       if (schedule === null) {
@@ -759,6 +770,55 @@ export class CronJobs {
     if (!this.stopped) this.arm(entry)
     this.logger.info('[%s] updated stored job %s', entry.job.name, id)
     return this.view(entry)
+  }
+
+  /**
+   * Apply a declared set (src/declared.js): create its new keys, change only
+   * the fields that differ, adopt a tool-made job named by an entry's
+   * `adopt` (its id, history, next run and pause state stay), and remove
+   * members that left the list. Jobs outside the set are never touched.
+   * Every entry is checked before anything changes; `dryRun` only plans.
+   * @param {{ set: string, jobs: unknown[], dryRun?: boolean, prune?: boolean, checkDeliver?: (target: { via: string, to: string }) => string | undefined }} input
+   *   `checkDeliver` returns a problem with a delivery target (a service that is not running), or undefined.
+   * @returns {Promise<{ set: string, dryRun: boolean, create: object[], update: object[], adopt: object[], remove: object[], unchanged: number }>}
+   */
+  async applyDeclared({ set, jobs, dryRun = false, prune = true, checkDeliver }) {
+    const store = this.requireStore()
+    checkSetName(set)
+    const plan = planDeclared({ set, entries: jobs, stored: store.all(), prune })
+    if (checkDeliver) {
+      for (const item of [...plan.create, ...plan.update, ...plan.adopt]) {
+        const target = item.desired.deliver
+        const problem = target ? checkDeliver(target) : undefined
+        if (problem) throw new JobInputError('invalid_job', `${item.key}: ${problem}`)
+      }
+    }
+    const summary = {
+      set,
+      dryRun,
+      create: plan.create.map(({ key, title, desired }) => ({ key, title, desired })),
+      update: plan.update.map(({ id, key, title, changes }) => ({ id, key, title, changes })),
+      adopt: plan.adopt.map(({ id, key, title, changes }) => ({ id, key, title, changes })),
+      remove: plan.remove,
+      unchanged: plan.unchanged.length,
+    }
+    if (dryRun) return summary
+    for (const item of plan.create) {
+      const view = await this.create({ ...declaredInput(item.desired), declared: { set, key: item.key }, paused: item.desired.paused, createdBy: `declared:${set}` })
+      summary.create.find(created => created.key === item.key).id = view.id
+    }
+    for (const item of [...plan.adopt, ...plan.update]) {
+      const fields = Object.keys(item.changes).filter(field => field !== 'paused')
+      const record = this.storedEntry(item.id).record
+      if (fields.length > 0 || record.declared?.set !== set || record.declared?.key !== item.key) {
+        await this.update(item.id, { ...declaredPatch(item.desired, fields), declared: { set, key: item.key } })
+      }
+      if (item.changes.paused && this.storedEntry(item.id).record.status !== 'ended') await this.setPaused(item.id, item.desired.paused)
+    }
+    for (const item of plan.remove) await this.remove(item.id, `left declared set ${set}`)
+    await this.record({ time: this.now().toISOString(), job: null, event: 'declared', set, created: summary.create.length, updated: summary.update.length, adopted: summary.adopt.length, removed: summary.remove.length })
+    this.logger.info('[declared %s] %d created, %d updated, %d adopted, %d removed, %d unchanged', set, summary.create.length, summary.update.length, summary.adopt.length, summary.remove.length, summary.unchanged)
+    return summary
   }
 
   /**
@@ -875,6 +935,7 @@ export class CronJobs {
       lastRun: this.history?.lastRun(job.id) ?? null,
       scheduled: timer !== undefined,
       ...(record ? { createdAt: record.createdAt, updatedAt: record.updatedAt, ...(record.createdBy ? { createdBy: record.createdBy } : {}) } : {}),
+      ...(record?.declared ? { declared: { set: record.declared.set, key: record.declared.key } } : {}),
       ...(state === 'ended' && record?.endedAt ? { endedAt: record.endedAt, ...(this.endedRetentionMs > 0 ? { removesAt: new Date(Date.parse(record.endedAt) + this.endedRetentionMs).toISOString() } : {}) } : {}),
     }
   }
@@ -1062,4 +1123,46 @@ function deliverView(job, target, defaults) {
 function targetView(job) {
   const target = job.target ?? { kind: 'new' }
   return { kind: target.kind, sessionId: target.sessionId ?? null }
+}
+
+/** The managed fields of a declared entry as create() input. */
+function declaredInput(desired) {
+  return {
+    title: desired.title,
+    prompt: desired.prompt,
+    command: desired.command,
+    ...(desired.schedule ? { schedule: scheduleInput(desired.schedule) } : {}),
+    ...(desired.on ? { on: desired.on } : {}),
+    ...(desired.once ? { once: true } : {}),
+    ...(desired.coalesceSeconds !== undefined ? { coalesceSeconds: desired.coalesceSeconds } : {}),
+    ...(desired.timeoutSeconds !== undefined ? { timeoutSeconds: desired.timeoutSeconds } : {}),
+    ...(desired.cwd ? { cwd: desired.cwd } : {}),
+    ...(desired.preset ? { preset: desired.preset } : {}),
+    target: desired.target,
+    ...(desired.deliver !== undefined ? { deliver: desired.deliver } : {}),
+    ...(desired.model ? { model: desired.model } : {}),
+  }
+}
+
+/** An update() patch that sets `fields` to their declared values (unset ones back to the default). */
+function declaredPatch(desired, fields) {
+  const patch = {}
+  for (const field of fields) {
+    const value = desired[field]
+    if (field === 'title') patch.title = value
+    else if (field === 'prompt' || field === 'command' || field === 'cwd' || field === 'preset') patch[field] = value ?? ''
+    else if (field === 'schedule') patch.schedule = value ? scheduleInput(value) : { cron: '' }
+    else if (field === 'on') patch.on = value ?? []
+    else if (field === 'once') patch.once = value === true
+    else if (field === 'coalesceSeconds' || field === 'timeoutSeconds' || field === 'deliver' || field === 'model') patch[field] = value ?? null
+    else if (field === 'target') patch.target = value
+  }
+  return patch
+}
+
+/** A stored schedule back as schedule input. */
+function scheduleInput(spec) {
+  if (spec.kind === 'cron') return { cron: spec.expression, timeZone: spec.timeZone }
+  if (spec.kind === 'rrule') return { rrule: spec.rrule }
+  return { at: spec.at, ...(spec.timeZone ? { timeZone: spec.timeZone } : {}) }
 }

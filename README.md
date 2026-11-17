@@ -345,6 +345,29 @@ Jobs created with the tools are kept in DSH storage (see below) and survive rest
 
 A delegated subagent can use the tools, but its own session cannot be a target, since it ends with its task.
 
+## Declared sets
+
+Jobs made one by one from conversations are easy to start and hard to review as a whole. A *declared set* keeps a group of standing jobs in a file you own (a repository, a dotfiles folder, another tool's config) and applies the whole list at once, the way `kubectl apply --prune` does: keys that are new are created, jobs whose fields differ are changed, and members of the set that left the list are removed. Jobs made with the tools and members of other sets are never touched, so quick one-off reminders keep working next to it.
+
+```sh
+dsh-cron-apply --set home --file jobs.json --dry-run   # what would change
+dsh-cron-apply --set home --file jobs.json             # apply it
+```
+
+The file is a JSON list of jobs (or `{ "jobs": [...] }`); `--file -` reads stdin. Each job takes the fields of `cron_job_create` (`title`, `prompt`, `command`, `cron` + `timeZone`, `rrule`, `at`, `on`, `once`, `coalesceSeconds`, `cwd`, `target` as `new` or `new_once`, `sessionId`, `deliver`, `model`) plus:
+
+- `key` (required): the job's stable name in the set, such as `nightly-backup`. Renaming a key replaces the job.
+- `preset`: agent preset of the sessions it opens (the tools take the caller's; here it is explicit).
+- `timeoutSeconds`: the command's time limit.
+- `paused`: `true` keeps it paused. A pause from the page or a tool lasts until the next apply.
+- `adopt`: the id of an existing tool-made job to take over the first time, keeping its id, run history, next run and pause state. Use it to move existing jobs into a set without losing their history.
+
+`deliver` is `<service>:<address>`, `none`, or `default` (or left out) for the row's target; every service a set names must be running, or nothing is applied. Every entry is checked before anything changes, so a typo in one job leaves the whole set as it was.
+
+Members are ordinary stored jobs: they catch up, keep history and show on the page and in `cron_job_list`, marked `declared: <set>/<key>`. The tools can still change them (a script that moves a job's time zone, a quick pause), and the next apply puts back whatever differs from the file; a `--dry-run` with no changes to the file shows such drift. The request travels through a file inbox under `$DSH_HOME/cron-jobs/requests` (no port or token). A request DSH does not take within `--timeout` (default 30 s) is withdrawn, and one older than ten minutes is refused, so an old list is never applied after a restart.
+
+Exit codes: 0 done, 1 refused (nothing changed; the reason is on stderr), 2 bad arguments, 3 DSH did not answer in time.
+
 ## Cron tasks page
 
 The Web GUI gets a **Cron tasks** entry in the sidebar, laid out like DSH's own Automation tasks page:

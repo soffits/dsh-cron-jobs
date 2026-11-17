@@ -355,6 +355,7 @@ export function modelJob(job, { brief = false } = {}) {
     ...(job.on ? { on: job.on } : {}),
     ...(job.once ? { once: true } : {}),
     ...(job.removesAt ? { removesAt: job.removesAt } : {}),
+    ...(job.declared ? { declared: `${job.declared.set}/${job.declared.key}`, declaredNote: 'Declared in a set kept elsewhere: the next apply of that set puts back any field changed here, so change its source instead.' } : {}),
     ...(job.coalesceEffectiveSeconds !== null && job.coalesceEffectiveSeconds !== undefined ? { coalesceSeconds: job.coalesceEffectiveSeconds, ...(job.coalesceSeconds === null ? { coalesceIsDefault: true } : {}) } : {}),
     ...(job.pendingEvents ? { pendingEvents: job.pendingEvents } : {}),
     ...(job.target ? { target: job.target.sessionId ? `${job.target.kind} ${job.target.sessionId}` : job.target.kind } : {}),

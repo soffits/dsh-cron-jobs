@@ -57,6 +57,8 @@ export const storedJobSchema = z.object({
   updatedAt: z.string(),
   // Session that created the job.
   createdBy: z.string().optional(),
+  // Member of a declared set (declared.js): the set's name and this job's key in it.
+  declared: z.object({ set: z.string().min(1), key: z.string().min(1) }).optional(),
 })
 
 /** @typedef {z.infer<typeof storedJobSchema>} StoredJob */
