@@ -138,6 +138,16 @@ test('pinned and person-held sessions stay out of the archive', async (t) => {
   assert.deepEqual([...registry.archivedSessionIds], [])
 })
 
+test('a follow-up from another session, steered in after the wake, still archives the session after its turn', async (t) => {
+  const { ctx, registry, add } = await host(t)
+  const woken = add('session-w')
+  woken.session.log.push(
+    { type: 'user/message', data: { source: { kind: 'schedule', principal: { kind: 'cron-job', channel: 'cron', id: 'job-1', name: 'mail' } } } },
+    { type: 'user/message', data: { source: { kind: 'user', rpcId: 'r', principal: { kind: 'dsh-session', channel: 'dsh', id: 'session-main' } } } })
+  assert.deepEqual(await archiveWhenIdle(ctx, 'session-w'), { archive: 'archived' })
+  assert.deepEqual([...registry.archivedSessionIds], ['session-w'])
+})
+
 test('reusing an archived session unarchives it before the prompt, then it is archived again', async (t) => {
   const { ctx, registry, add } = await host(t)
   const agent = add('session-r')

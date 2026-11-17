@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { archiveWhenIdle, deliverToSession, openAgentSession, userHold, userMessage } from '../src/session.js'
+import { archiveWhenIdle, deliverToSession, NON_PERSON_PRINCIPAL_KINDS, openAgentSession, sentByPerson, userHold, userMessage } from '../src/session.js'
 
 const logger = { warn() {}, info() {}, error() {} }
 
@@ -219,6 +219,27 @@ test('userHold ignores machine messages and this plugin\'s own prompts', () => {
   ]
   assert.equal(userHold(registry, 's', { log }), undefined)
   assert.equal(userHold(registry, 's', { log: [...log, { type: 'user/message', data: { source: { kind: 'user', rpcId: 'r' } } }] }), 'taken over by a person')
+})
+
+test('sentByPerson: the owner and a channel\'s verified sender are people, agents and jobs are not', () => {
+  assert.equal(sentByPerson({ kind: 'user', rpcId: 'r' }), true, 'the owner in the Web UI has no principal')
+  assert.equal(sentByPerson({ kind: 'user', principal: { kind: 'oidc-user', channel: 'web', id: 'sub' } }), true)
+  assert.equal(sentByPerson({ kind: 'user', principal: { kind: 'telegram-user', channel: 'telegram', id: '1' } }), true)
+  assert.equal(sentByPerson({ kind: 'user', principal: { kind: 'some-new-channel-user', channel: 'x', id: '1' } }), true, 'an unknown kind keeps the session rather than archiving it')
+  for (const kind of NON_PERSON_PRINCIPAL_KINDS) {
+    assert.equal(sentByPerson({ kind: 'user', principal: { kind, channel: 'c', id: 'i' } }), false, kind)
+  }
+  assert.equal(sentByPerson({ kind: 'schedule' }), false)
+  assert.equal(sentByPerson(undefined), false)
+})
+
+test('userHold: a follow-up from another session, a job or a tool does not take the session over', () => {
+  const fromSession = { type: 'user/message', data: { source: { kind: 'user', rpcId: 'r', principal: { kind: 'dsh-session', channel: 'dsh', id: 'session-main' } } } }
+  const fromJob = { type: 'user/message', data: { source: { kind: 'user', principal: { kind: 'cron-job', channel: 'cron', id: 'job-1', name: 'j' } } } }
+  const fromScript = { type: 'user/message', data: { source: { kind: 'user', principal: { kind: 'external', channel: 'api', id: 'x' } } } }
+  assert.equal(userHold(undefined, 's', { log: [fromSession, fromJob, fromScript] }), undefined)
+  const person = { type: 'user/message', data: { source: { kind: 'user', principal: { kind: 'telegram-user', channel: 'telegram', id: '1' } } } }
+  assert.equal(userHold(undefined, 's', { log: [fromSession, person] }), 'taken over by a person', 'a person among agent messages still keeps it')
 })
 
 test('archiveWhenIdle waits for the turn, and still archives after a failed turn', async () => {

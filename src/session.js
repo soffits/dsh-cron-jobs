@@ -124,13 +124,37 @@ export async function deliverToSession(ctx, { sessionId, text, messageId, princi
 }
 
 /**
+ * Principal kinds for senders that are not people: another DSH session, a
+ * scheduled job, an outside script. The same shared kinds `dsh-message-context`
+ * uses to tell agent messages from a person's; a channel records one of them
+ * on `source.principal` for what a machine sent through it.
+ */
+export const NON_PERSON_PRINCIPAL_KINDS = Object.freeze(['dsh-session', 'cron-job', 'external'])
+
+/**
+ * Whether a person typed this message. DSH gives every message another
+ * session, job or tool sends (`prompt_session`, `open_session`) source kind
+ * `user` as well, so the kind alone cannot tell: the caller behind it is
+ * `source.principal`, which DSH and the channel plugins write from the
+ * connection's own identity (never from message text). A person is the owner
+ * in the Web UI (no principal) or a channel's verified sender (`oidc-user`,
+ * `telegram-user`, ...); a principal of a non-person kind is an agent.
+ *
+ * @param {{ kind?: string, principal?: { kind?: string } } | undefined} source - `source` of a `user/message` event.
+ * @returns {boolean}
+ */
+export function sentByPerson(source) {
+  return source?.kind === 'user' && !NON_PERSON_PRINCIPAL_KINDS.includes(source.principal?.kind)
+}
+
+/**
  * Why a session belongs to a person now, or undefined when it does not: it is
  * pinned in the sidebar, or a person has taken it over by sending it a
- * message from any client (Web UI, Telegram, or another). DSH marks what a
- * person sends with source kind `user`; this plugin's prompts are `schedule`,
- * and machine messages inside its own turns (runtime context, subagent
- * results) have their own kinds. Such a session is neither archived nor
- * reused.
+ * message from any client (Web UI, Telegram, or another; see
+ * {@link sentByPerson}). This plugin's prompts are `schedule`, machine
+ * messages inside its own turns (runtime context, subagent results) have
+ * their own kinds, and messages from other agent sessions or jobs carry an
+ * agent principal. Such a session is neither archived nor reused.
  *
  * @param {{ pinnedSessionIds?: string[] } | undefined} registry - The Workspace registry, when the host has one.
  * @param {string} sessionId
@@ -139,7 +163,7 @@ export async function deliverToSession(ctx, { sessionId, text, messageId, princi
  */
 export function userHold(registry, sessionId, session) {
   if (registry?.pinnedSessionIds?.includes(sessionId)) return 'pinned'
-  if (session?.log?.some(event => event.type === 'user/message' && event.data?.source?.kind === 'user')) {
+  if (session?.log?.some(event => event.type === 'user/message' && sentByPerson(event.data?.source))) {
     return 'taken over by a person'
   }
   return undefined
