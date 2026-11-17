@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.21.0
 
 - Built-in events `dsh.turn.started` and `dsh.turn.ended` (any session's turn, `data.sessionId`), sent only while a job listens, so a view of what is running can follow the sessions instead of polling them.
 
