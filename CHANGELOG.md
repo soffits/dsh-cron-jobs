@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.0
 
 - A job can have its own `maxRunsPerHour` (in `schedule_create` / `schedule_edit`, declared sets and config jobs): the cap on event-started runs in any hour, replacing the row's `events.maxRunsPerHour` for that job; `0` lifts it, `-1` on edit goes back to the row's value. Shown in the list and view as `maxRunsPerHour`.
 
