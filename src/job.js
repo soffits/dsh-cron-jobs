@@ -78,8 +78,10 @@ export function agentSettings(job, defaults = {}) {
 }
 
 /**
- * Runs one job per tick. A tick that arrives while the previous run of the
- * same job is still going is skipped.
+ * Runs one job per tick. A job has one piece of work in flight at a time: a
+ * scheduled tick that arrives while the previous run is still going, or
+ * while the agent session it woke is still working on its turn, is skipped
+ * (events wait for the run and the turn to end; see CronJobs.subscribe).
  *
  * @typedef {object} Job
  * @property {string} [id] - Stored jobs: their id. Config jobs: the name (the default).
@@ -106,6 +108,7 @@ export class JobRunner {
    * @param {(target: { via: string, to: string }, message: { text: string, files: string[] }, from: { job: string, jobId: string, sessionId?: string, runId?: string }, options: { cwd?: string, waitMs?: number, onWait?: Function }) => Promise<{ status: 'sent' | 'failed' | 'unavailable' | 'stopped', attempts: number, error?: string }>} [deps.send] - Hands a result to its delivery service (see deliver.js sendMessage); without it nothing is delivered.
    * @param {(sessionId: string, messageId: string, options: { signal?: AbortSignal }) => Promise<{ pending: true } | { text: string, reason?: string } | { error: string }>} [deps.answer] - Waits for the final answer to a prompt (see session.js waitForAnswer).
    * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object, problems?: { deliver?: object | false } }} [deps.defaults] - Plugin-level agent settings, the default delivery target, and where problem notes go.
+   * @param {() => void} [deps.onTurnEnd] - Called when a woken turn ends, so a waiting event batch can run.
    * @param {(problem: object, triggers: string[]) => boolean} [deps.reportProblem] - Emits a problem note as an event (see CronJobs.reportProblem); true when a job took it.
    * @param {{ info: Function, warn: Function }} deps.logger
    * @param {AbortSignal} [deps.signal] - Stops a running command when aborted.
@@ -113,10 +116,11 @@ export class JobRunner {
    * @param {{ begin: Function, finish: Function }} [deps.history] - Saved run history (see history.js).
    * @param {() => Date} [deps.now]
    */
-  constructor(job, { run, wake, reuse, keepSession, settle, send, answer, reportProblem, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
+  constructor(job, { run, wake, reuse, keepSession, settle, send, answer, onTurnEnd, reportProblem, defaults = {}, logger, signal, record = async () => {}, history = NO_HISTORY, now = () => new Date() }) {
     this.job = job
     this.send = send
     this.answer = answer
+    this.onTurnEnd = onTurnEnd
     this.reuse = reuse
     this.keepSession = keepSession
     this.settle = settle
@@ -138,6 +142,17 @@ export class JobRunner {
     this.running = false
     /** The run in progress: when it started and what started it; null when idle. */
     this.current = null
+    /** Turns this job woke that have not ended yet (see watchTurn). */
+    this.turns = new Set()
+  }
+
+  /**
+   * Whether the job's last piece of work is still going: a run in progress,
+   * or an agent turn it woke that has not ended. A new piece of work waits
+   * for this to be false, so one job never has two sessions working at once.
+   */
+  get working() {
+    return this.running || this.turns.size > 0
   }
 
   /**
@@ -151,6 +166,13 @@ export class JobRunner {
     if (this.running) {
       logger.warn('[%s] previous run still going; skipping this tick', job.name)
       await this.record({ time: this.now().toISOString(), job: job.name, event: 'skipped' })
+      return { status: 'skipped' }
+    }
+    // A manual run is a person's explicit ask and a rerun continues the session it cut; only the clock waits.
+    if (trigger === 'schedule' && this.turns.size > 0) {
+      const [turn] = this.turns
+      logger.warn('[%s] session %s is still working on the previous run; skipping this tick', job.name, turn.sessionId)
+      await this.record({ time: this.now().toISOString(), job: job.name, event: 'skipped', reason: 'session-working', sessionId: turn.sessionId })
       return { status: 'skipped' }
     }
     this.running = true
@@ -355,8 +377,17 @@ export class JobRunner {
    */
   watchTurn(sessionId, runId, messageId, pending) {
     const { job, logger } = this
+    // The turn counts as the job's work until it ends, not until its answer is delivered.
+    const turn = { sessionId, messageId }
+    this.turns.add(turn)
     const work = async () => {
-      const answer = await this.answer(sessionId, messageId, { signal: this.signal })
+      let answer
+      try {
+        answer = await this.answer(sessionId, messageId, { signal: this.signal })
+      } finally {
+        this.turns.delete(turn)
+        this.onTurnEnd?.()
+      }
       if ('pending' in answer || this.signal?.aborted) return undefined
       const cut = 'text' in answer && cutOff(answer)
       const reason = 'error' in answer ? 'error' : answer.reason
