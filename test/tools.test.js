@@ -246,6 +246,18 @@ test('edit prompt_replace and command_replace change text in place, all or nothi
   assert.equal((await call('edit', { id: 'nope', action: 'update', command_replace: [{ old: 'a', new: 'b' }] })).code, 'not_found')
 })
 
+test('create and edit take maxRunsPerHour; a negative number goes back to the default', async () => {
+  const { call } = setup()
+  const job = await call('create', { title: 'Plan card', command: 'true', on: ['source.todo'], maxRunsPerHour: 120 })
+  assert.equal(job.maxRunsPerHour, 120)
+  assert.equal(job.maxRunsPerHourIsDefault, undefined)
+  assert.equal((await call('edit', { id: job.id, action: 'update', maxRunsPerHour: 0 })).maxRunsPerHour, 0)
+  const cleared = await call('edit', { id: job.id, action: 'update', maxRunsPerHour: -1 })
+  assert.equal(cleared.maxRunsPerHourIsDefault, true)
+  assert.equal((await call('edit', { id: job.id, action: 'update', maxRunsPerHour: 1.5 })).code, 'invalid_job')
+  assert.match((await call('edit', { id: job.id, action: 'update', maxRunsPerHour: '9' })).message, /must be a number/)
+})
+
 test('create and edit take coalesceSeconds; a negative number goes back to the default', async () => {
   const { call } = setup()
   const job = await call('create', { title: 'Mail', prompt: 'Read it.', on: ['mail.*'], coalesceSeconds: 900 })

@@ -176,6 +176,7 @@ export class CronJobs {
     entry.batcher = new EventBatcher({
       ...this.eventSettings,
       ...(entry.job.coalesceSeconds !== undefined ? { coalesceMs: entry.job.coalesceSeconds * 1000 } : {}),
+      ...(entry.job.maxRunsPerHour !== undefined ? { maxRunsPerHour: entry.job.maxRunsPerHour } : {}),
       now: () => this.now().getTime(),
       busy: () => entry.runner.running,
       start: batch => this.runEvents(entry, batch),
@@ -681,6 +682,7 @@ export class CronJobs {
       ...(on.length > 0 ? { on } : {}),
       ...(input.once === true ? { once: true } : {}),
       ...(input.coalesceSeconds !== undefined ? { coalesceSeconds: coalesceSeconds(input.coalesceSeconds) } : {}),
+      ...(input.maxRunsPerHour !== undefined ? { maxRunsPerHour: maxRunsPerHour(input.maxRunsPerHour) } : {}),
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(input.preset ? { preset: input.preset } : {}),
       target: input.target ?? { kind: 'new' },
@@ -740,6 +742,10 @@ export class CronJobs {
     if (patch.coalesceSeconds !== undefined) {
       if (patch.coalesceSeconds === null) delete next.coalesceSeconds
       else next.coalesceSeconds = coalesceSeconds(patch.coalesceSeconds)
+    }
+    if (patch.maxRunsPerHour !== undefined) {
+      if (patch.maxRunsPerHour === null) delete next.maxRunsPerHour
+      else next.maxRunsPerHour = maxRunsPerHour(patch.maxRunsPerHour)
     }
     if (patch.timeoutSeconds !== undefined) {
       if (patch.timeoutSeconds === null) delete next.timeoutSeconds
@@ -940,6 +946,8 @@ export class CronJobs {
       once: job.once === true,
       coalesceSeconds: job.coalesceSeconds ?? null,
       coalesceEffectiveSeconds: job.on?.length > 0 ? (job.coalesceSeconds ?? this.eventSettings.coalesceMs / 1000) : null,
+      maxRunsPerHour: job.maxRunsPerHour ?? null,
+      maxRunsPerHourEffective: job.on?.length > 0 ? (job.maxRunsPerHour ?? this.eventSettings.maxRunsPerHour) : null,
       pendingEvents: entry.batcher?.size > 0 ? { count: entry.batcher.size, dueAt: new Date(entry.batcher.dueAt).toISOString() } : null,
       cron: spec?.kind === 'cron' ? spec.expression : null,
       timeZone: scheduleZone(spec) ?? null,
@@ -1037,6 +1045,7 @@ function fromStored(record) {
     on: record.on ?? [],
     ...(record.once ? { once: true } : {}),
     ...(record.coalesceSeconds !== undefined ? { coalesceSeconds: record.coalesceSeconds } : {}),
+    ...(record.maxRunsPerHour !== undefined ? { maxRunsPerHour: record.maxRunsPerHour } : {}),
   }
 }
 
@@ -1072,6 +1081,11 @@ function changedSchedule(current, input) {
 
 function hasSchedule(input) {
   return input !== undefined && ['cron', 'rrule', 'at'].some(key => typeof input[key] === 'string' && input[key].trim() !== '')
+}
+
+function maxRunsPerHour(value) {
+  if (!Number.isInteger(value) || value < 0) throw new JobInputError('invalid_job', 'maxRunsPerHour must be a whole number, 0 or more (0 means no cap)')
+  return value
 }
 
 function coalesceSeconds(value) {
@@ -1155,6 +1169,7 @@ function declaredInput(desired) {
     ...(desired.on ? { on: desired.on } : {}),
     ...(desired.once ? { once: true } : {}),
     ...(desired.coalesceSeconds !== undefined ? { coalesceSeconds: desired.coalesceSeconds } : {}),
+    ...(desired.maxRunsPerHour !== undefined ? { maxRunsPerHour: desired.maxRunsPerHour } : {}),
     ...(desired.timeoutSeconds !== undefined ? { timeoutSeconds: desired.timeoutSeconds } : {}),
     ...(desired.cwd ? { cwd: desired.cwd } : {}),
     ...(desired.preset ? { preset: desired.preset } : {}),

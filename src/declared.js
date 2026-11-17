@@ -25,9 +25,9 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u
 export const MAX_DECLARED_JOBS = 1000
 
 /** The fields a declared entry sets; everything else on a stored job (run state, dates) is the plugin's. */
-export const MANAGED_FIELDS = Object.freeze(['title', 'prompt', 'command', 'schedule', 'on', 'once', 'coalesceSeconds', 'cwd', 'preset', 'target', 'deliver', 'model', 'timeoutSeconds', 'paused'])
+export const MANAGED_FIELDS = Object.freeze(['title', 'prompt', 'command', 'schedule', 'on', 'once', 'coalesceSeconds', 'maxRunsPerHour', 'cwd', 'preset', 'target', 'deliver', 'model', 'timeoutSeconds', 'paused'])
 
-const ENTRY_FIELDS = new Set(['key', 'adopt', 'title', 'prompt', 'command', 'cron', 'rrule', 'at', 'timeZone', 'on', 'once', 'coalesceSeconds', 'cwd', 'preset', 'target', 'sessionId', 'deliver', 'model', 'timeoutSeconds', 'paused'])
+const ENTRY_FIELDS = new Set(['key', 'adopt', 'title', 'prompt', 'command', 'cron', 'rrule', 'at', 'timeZone', 'on', 'once', 'coalesceSeconds', 'maxRunsPerHour', 'cwd', 'preset', 'target', 'sessionId', 'deliver', 'model', 'timeoutSeconds', 'paused'])
 
 export function checkSetName(set) {
   if (typeof set !== 'string' || !NAME.test(set)) throw new DeclaredSetError('invalid_set', `set must be a name of letters, digits and . _ - (at most 100), not ${JSON.stringify(set)}`)
@@ -71,7 +71,7 @@ export function desiredJob(entry, index = 0) {
     if (desired.schedule === undefined && desired.on === undefined) throw new Error('a job needs a schedule, on (event channels), or both')
     if (entry.once === true) desired.once = true
     else if (entry.once !== undefined && entry.once !== false) throw new Error('once must be true or false')
-    for (const field of ['coalesceSeconds', 'timeoutSeconds']) {
+    for (const field of ['coalesceSeconds', 'maxRunsPerHour', 'timeoutSeconds']) {
       if (entry[field] === undefined) continue
       if (!Number.isInteger(entry[field]) || entry[field] < 0) throw new Error(`${field} must be a whole number, 0 or more`)
       desired[field] = entry[field]

@@ -94,6 +94,7 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
 | `cron` | Cron expression: 5 fields, or 6 with seconds first. Parsed by [croner](https://github.com/hexagon/croner), which handles daylight-saving changes like Vixie cron: a fixed time skipped by a spring forward runs at the first valid time after the gap, a fixed time repeated by a fall back runs once, and patterns with several hours, minutes or seconds run on both repeated occurrences. Set exactly one of `cron`, `rrule` and `at`, or none when the job has `on`. |
 | `on` | Event channel patterns that start a run, such as `[mail.inbox, alerts.*]`. See [Events](#events). |
 | `coalesceSeconds` | How long this job's events gather before it runs once. `0` runs at once. The row's `events.coalesceSeconds` when unset. |
+| `maxRunsPerHour` | Most event-started runs of this job in any hour. `0` means no cap. The row's `events.maxRunsPerHour` when unset. |
 | `rrule` | RFC 5545 schedule: a `DTSTART` line and an `RRULE` line. The time zone comes from `DTSTART` (`TZID=...`, or `Z` for UTC). See [Schedules](#schedules). |
 | `at` | Run once at this time: ISO 8601 with an offset, or a local date-time read in `timeZone`. |
 | `timeZone` | IANA time zone for the cron expression or an `at` without offset. The Host's zone when empty. |
@@ -126,7 +127,7 @@ Next to `jobs`, the row also takes:
 | `runLog` | Optional JSON Lines file of run starts and ends, see below. |
 | `watchers` | Long-running commands whose output lines are events: `[{ id, channel, command, cwd, enabled }]`. See [Watchers](#watchers). |
 | `events.coalesceSeconds` | Events for one job that arrive within this many seconds of the first start one run. Default 30; a job's own `coalesceSeconds` replaces it. |
-| `events.maxRunsPerHour` | Most event-started runs of one job in any hour; past that, events wait and run together. Default 6; `0` means no cap. |
+| `events.maxRunsPerHour` | Most event-started runs of one job in any hour; past that, events wait and run together. Default 6; `0` means no cap. A job's own `maxRunsPerHour` replaces it. |
 
 ## How runs work
 
@@ -299,7 +300,7 @@ It writes one file into the plugin's inbox, `$DSH_HOME/cron-jobs/events/` (mode 
 - The command gets them on stdin as one JSON document, `{"trigger": "event", "events": [{"channel", "at", "data" or "text", "key", "source"}], "dropped": 0}`, and every command gets `DSH_CRON_TRIGGER` (`schedule`, `manual` or `event`) and `DSH_CRON_JOB` in its environment. A gate still decides whether to wake the agent.
 - The agent prompt gets the events appended, one JSON line each, in a block marked as untrusted data from outside DSH. An event is a hint: the job should read the truth from its source (the mailbox, the CI run), so a forged or garbled event costs one wasted run, and a message's subject never reaches the agent as an instruction.
 
-If the job is still running when its batch is ready, it runs once more as soon as the current run ends, with every event gathered meanwhile. A scheduled tick that finds the job running is still skipped as before. At most `events.maxRunsPerHour` (6) event runs of one job start in any hour; past that, events wait and run together when the oldest of those runs is an hour old, so a stuck feed cannot start hundreds of runs. A paused, ended or disabled job ignores events. The run history and the Cron tasks page show event runs with their channels.
+If the job is still running when its batch is ready, it runs once more as soon as the current run ends, with every event gathered meanwhile. A scheduled tick that finds the job running is still skipped as before. At most `events.maxRunsPerHour` (6) event runs of one job start in any hour (a job's own `maxRunsPerHour` replaces that for it: a cheap command job that rebuilds a view on every change wants a higher number than an agent handler); past that, events wait and run together when the oldest of those runs is an hour old, so a stuck feed cannot start hundreds of runs. A paused, ended or disabled job ignores events. The run history and the Cron tasks page show event runs with their channels.
 
 **`once`** (tools only) ends a job after its first run that was not started by hand. With `on: [dsh.started]` it waits for the next DSH start.
 

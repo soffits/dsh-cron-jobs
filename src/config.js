@@ -36,6 +36,7 @@ const Job = z.object({
   timeZone: z.string().description('IANA time zone for the cron expression or an at without offset, such as Europe/Berlin. The host zone when empty (an at without offset needs it).'),
   on: z.array(z.string()).default([]).description('Event channels that start a run, such as mail.inbox or alerts.* (* matches any characters). Events arriving close together run the job once; the gate command gets them as JSON on stdin and the prompt gets them appended. Keep a slower schedule as a safety net.'),
   coalesceSeconds: z.natural().description('Events for this job that arrive within this many seconds of the first one start a single run. 0 runs at once. The events.coalesceSeconds setting when unset.'),
+  maxRunsPerHour: z.natural().description('Most event-started runs of this job in any hour; past that, events wait and run together. 0 means no cap. The events.maxRunsPerHour setting when unset.'),
   command: z.string().role('textarea').description('Shell command, run with bash (or sh when bash is missing). Leave empty for an agent-only job, which sends agent.prompt at every run.'),
   cwd: z.string().description('Working directory of the command. The host process directory when empty.'),
   timeoutSeconds: z.natural().default(DEFAULT_TIMEOUT_SECONDS)

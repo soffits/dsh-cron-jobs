@@ -224,3 +224,35 @@ test('a config job takes coalesceSeconds too', async () => {
   assert.equal(controller.get('cfg').pendingEvents.dueAt, new Date(NOW.getTime() + 120_000).toISOString())
   await controller.stop()
 })
+
+test('a job\'s own maxRunsPerHour replaces the plugin cap, 0 lifts it, and it can be cleared', async () => {
+  const { controller, wakes } = slowSetup({ coalesceSeconds: 0, maxRunsPerHour: 1 })
+  const capped = await controller.create({ ...base, title: 'Capped', prompt: 'p', command: 'gate', on: ['a.*'] })
+  const free = await controller.create({ ...base, title: 'Free', prompt: 'p', command: 'gate', on: ['b.*'], maxRunsPerHour: 0 })
+  assert.equal(capped.maxRunsPerHour, null)
+  assert.equal(capped.maxRunsPerHourEffective, 1)
+  assert.equal(free.maxRunsPerHourEffective, 0)
+  for (const channel of ['a.1', 'a.2', 'a.3', 'b.1', 'b.2', 'b.3']) {
+    controller.emit({ channel })
+    await tick()
+  }
+  assert.equal(wakes.filter(w => w.principal.id === capped.id).length, 1)
+  assert.equal(wakes.filter(w => w.principal.id === free.id).length, 3)
+  const raised = await controller.update(capped.id, { maxRunsPerHour: 60 })
+  assert.equal(raised.maxRunsPerHourEffective, 60)
+  assert.equal((await controller.update(capped.id, { maxRunsPerHour: null })).maxRunsPerHourEffective, 1)
+  await assert.rejects(controller.update(capped.id, { maxRunsPerHour: -1 }), JobInputError)
+  await assert.rejects(controller.update(capped.id, { maxRunsPerHour: 1.5 }), JobInputError)
+  await controller.stop()
+})
+
+test('a config job takes maxRunsPerHour too', async () => {
+  const history = new HistoryStore({ table: memoryTable(), logger: quiet })
+  const controller = new CronJobs({
+    jobs: [{ name: 'cfg', command: 'true', on: ['x'], maxRunsPerHour: 90 }],
+    logger: quiet, history, now: () => NOW, watchdogMs: 0, events: { maxRunsPerHour: 6 },
+    run: async () => ({ ok: true, exitCode: 0, stdout: '', stderr: '', durationMs: 1 }),
+  }).start()
+  assert.equal(controller.get('cfg').maxRunsPerHourEffective, 90)
+  await controller.stop()
+})
