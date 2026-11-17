@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.1
 
 - Fixed: a woken session was never archived once another agent session or job had sent it a follow-up (`prompt_session`, `open_session`). DSH marks those messages with source kind `user` like a person's, and the plugin took them for a person taking the session over. It now reads `source.principal` and ignores the agent kinds `dsh-session`, `cron-job` and `external` (the shared kinds `dsh-message-context` tells apart); only the owner in the Web UI or a channel's signed-in sender keeps a session. The session is archived after the turn the follow-up causes.
 
