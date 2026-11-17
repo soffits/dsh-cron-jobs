@@ -22,6 +22,16 @@ test('an old request is refused, a fresh one reaches applyDeclared', async () =>
   assert.deepEqual([calls[0].dryRun, calls[0].prune], [true, true])
 })
 
+test('a release request reaches releaseDeclared, and expires like any other', async () => {
+  const calls = []
+  const jobs = { releaseDeclared: async input => { calls.push(input); return { set: input.set, release: [] } } }
+  const now = () => Date.parse('2026-11-17T12:00:00Z')
+  await assert.rejects(handleRequest(jobs, { type: 'release', set: 'home', at: new Date(now() - REQUEST_MAX_AGE_MS - 1).toISOString() }, { now }), /expired/u)
+  const done = await handleRequest(jobs, { type: 'release', set: 'home', dryRun: true, at: new Date(now()).toISOString() }, { now })
+  assert.deepEqual(done, { result: { set: 'home', release: [] } })
+  assert.deepEqual(calls, [{ set: 'home', dryRun: true }])
+})
+
 test('dsh-cron-apply sends the set and prints the result; with nobody listening it withdraws the request', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cron-requests-'))
   const env = { ...process.env, DSH_CRON_REQUESTS_DIR: dir }
@@ -29,6 +39,10 @@ test('dsh-cron-apply sends the set and prints the result; with nobody listening 
   writeFileSync(empty, '[]')
   const lonely = await run(process.execPath, [CLI, '--set', 'home', '--file', empty, '--timeout', '0.3'], { env }).then(() => 0, error => error.code)
   assert.equal(lonely, 3)
+  const releaseAlone = await run(process.execPath, [CLI, '--set', 'home', '--release', '--timeout', '0.3'], { env }).then(() => 0, error => error.code)
+  assert.equal(releaseAlone, 3, 'a release needs no list and is sent like any request')
+  const releaseWithList = await run(process.execPath, [CLI, '--set', 'home', '--release', '--file', empty], { env }).then(() => 0, error => error.code)
+  assert.equal(releaseWithList, 2)
   assert.deepEqual(readdirSync(dir).filter(name => name.endsWith('.json')), [], 'nothing is left behind to apply later')
 
   const seen = []

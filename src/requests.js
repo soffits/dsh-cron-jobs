@@ -17,12 +17,13 @@ export function defaultRequestDir(env = process.env) {
 /**
  * Carry out one request.
  * @param {import('./controller.js').CronJobs} jobs
- * @param {object} input - `{ type: 'declared', set, jobs, dryRun?, prune?, at }`.
+ * @param {object} input - `{ type: 'declared', set, jobs, dryRun?, prune?, at }` or `{ type: 'release', set, dryRun?, at }`.
  * @param {{ now?: () => number, checkDeliver?: (target: { via: string, to: string }) => string | undefined }} [options]
  */
 export async function handleRequest(jobs, input, { now = Date.now, checkDeliver } = {}) {
-  if (input?.type !== 'declared') throw new Error(`unknown request type ${JSON.stringify(input?.type)}`)
+  if (input?.type !== 'declared' && input?.type !== 'release') throw new Error(`unknown request type ${JSON.stringify(input?.type)}`)
   const age = now() - Date.parse(input.at ?? '')
   if (!(age < REQUEST_MAX_AGE_MS)) throw new Error(`request from ${input.at} expired before DSH took it; nothing was changed. Send it again.`)
+  if (input.type === 'release') return { result: await jobs.releaseDeclared({ set: input.set, dryRun: input.dryRun === true }) }
   return { result: await jobs.applyDeclared({ set: input.set, jobs: input.jobs, dryRun: input.dryRun === true, prune: input.prune !== false, checkDeliver }) }
 }

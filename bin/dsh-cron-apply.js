@@ -12,6 +12,7 @@ import { defaultRequestDir } from '../src/requests.js'
 import { enqueueEvent, waitForEventResult } from '../src/spool.js'
 
 const usage = `Usage: dsh-cron-apply --set <name> --file <path | -> [--dry-run] [--no-prune] [--timeout <seconds>]
+       dsh-cron-apply --set <name> --release [--dry-run] [--timeout <seconds>]
 
 Makes the jobs of declared set <name> match the list given as JSON (a list of
 jobs, or {"jobs": [...]}) in --file ("-" reads stdin): new keys are created, jobs
@@ -24,6 +25,8 @@ timeZone | rrule | at, on, once, coalesceSeconds, cwd, preset, target
 "default"), model {provider, model, reasoningEffort}, timeoutSeconds, paused,
 and adopt (the id of a tool-made job to take over, keeping its history).
 
+  --release         let go of the set: its members become ordinary stored jobs (same ids,
+                    history and schedules); nothing is deleted and no list is needed
   --dry-run         print what would change, change nothing
   --no-prune        keep members that are not in the list
   --timeout <s>     how long to wait for DSH (default 30)
@@ -40,6 +43,7 @@ try {
       set: { type: 'string' },
       'dry-run': { type: 'boolean' },
       'no-prune': { type: 'boolean' },
+      release: { type: 'boolean' },
       file: { type: 'string', short: 'f' },
       timeout: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
@@ -59,18 +63,26 @@ const fail = (message) => {
   process.exit(2)
 }
 if (!values.set) fail('Give --set <name>.')
-if (!values.file) fail('Give --file <path>, or --file - to read the list from stdin.')
-let jobs
-try {
-  const parsed = JSON.parse(readFileSync(values.file === '-' ? 0 : values.file, 'utf8'))
-  jobs = Array.isArray(parsed) ? parsed : parsed?.jobs
-} catch (error) {
-  fail(`The job list is not JSON: ${error.message}`)
+if (values.release && values.file) fail('--release takes no list: give --set only.')
+if (!values.release && !values.file) fail('Give --file <path>, or --file - to read the list from stdin.')
+function readJobs() {
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(values.file === '-' ? 0 : values.file, 'utf8'))
+  } catch (error) {
+    fail(`The job list is not JSON: ${error.message}`)
+  }
+  const jobs = Array.isArray(parsed) ? parsed : parsed?.jobs
+  if (!Array.isArray(jobs)) fail('Give a list of jobs, or an object with a "jobs" list.')
+  return jobs
 }
-if (!Array.isArray(jobs)) fail('Give a list of jobs, or an object with a "jobs" list.')
 
 const dir = defaultRequestDir()
-const id = await enqueueEvent({ type: 'declared', set: values.set, jobs, dryRun: values['dry-run'] === true, prune: values['no-prune'] !== true }, { dir, wait: true })
+const dryRun = values['dry-run'] === true
+const request = values.release
+  ? { type: 'release', set: values.set, dryRun }
+  : { type: 'declared', set: values.set, jobs: readJobs(), dryRun, prune: values['no-prune'] !== true }
+const id = await enqueueEvent(request, { dir, wait: true })
 const seconds = Number(values.timeout ?? 30)
 const result = await waitForEventResult(id, { dir, timeoutMs: (Number.isFinite(seconds) && seconds > 0 ? seconds : 30) * 1000 })
 if (result === undefined) {
