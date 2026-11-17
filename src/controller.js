@@ -161,6 +161,8 @@ export class CronJobs {
     entry.runner = new JobRunner(entry.job, {
       ...this.deps,
       ...(entry.record ? { keepSession: sessionId => this.keepSession(entry, sessionId) } : {}),
+      // A waiting event batch runs once the turn the job woke has ended.
+      onTurnEnd: () => entry.batcher?.idle(),
     })
     this.entries.set(entry.job.id, entry)
     this.subscribe(entry)
@@ -178,7 +180,7 @@ export class CronJobs {
       ...(entry.job.coalesceSeconds !== undefined ? { coalesceMs: entry.job.coalesceSeconds * 1000 } : {}),
       ...(entry.job.maxRunsPerHour !== undefined ? { maxRunsPerHour: entry.job.maxRunsPerHour } : {}),
       now: () => this.now().getTime(),
-      busy: () => entry.runner.running,
+      busy: () => entry.runner.working,
       start: batch => this.runEvents(entry, batch),
     })
   }
@@ -447,8 +449,10 @@ export class CronJobs {
    * started by hand) and let a waiting event batch run.
    */
   runTracked(entry, tick, { scheduled = false } = {}) {
-    const after = tick.finally(async () => {
-      if (scheduled && entry.record) await this.saveNext(entry)
+    let outcome
+    const after = tick.then((result) => { outcome = result; return result }).finally(async () => {
+      // A skipped tick did not run the job, so it must not use up a `once` job.
+      if (scheduled && entry.record) await this.saveNext(entry, { ran: outcome?.status !== 'skipped' })
     }).finally(() => entry.batcher?.idle())
     return this.track(after, entry.job.name)
   }
@@ -458,13 +462,13 @@ export class CronJobs {
    * end it (a once job, or a schedule with no more runs and no events to
    * wait for).
    */
-  async saveNext(entry) {
+  async saveNext(entry, { ran = true } = {}) {
     if (this.entries.get(entry.job.id) !== entry || this.store === undefined) return
     const current = this.store.get(entry.job.id)
     if (current === undefined) return
     const next = entry.timer?.nextRun() ?? null
     const listens = current.on?.length > 0
-    const ends = current.status === 'active' && (current.once === true || (next === null && !listens))
+    const ends = current.status === 'active' && ((current.once === true && ran) || (next === null && !listens))
     const status = ends ? 'ended' : current.status
     await this.saveRecord(entry, { ...current, status, scheduledAt: next?.toISOString(), ...(ends ? { endedAt: this.now().toISOString() } : {}) })
     if (status === 'ended') {
