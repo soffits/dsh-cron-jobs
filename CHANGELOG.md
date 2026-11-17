@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A job that wakes an agent right after a DSH start (a catch-up run, a watcher event) waits for the session services instead of failing with "no sessionController service". Opening a session and posting into an existing one now wait the way archiving and answer lookup already did, for every service they use.
+
 ## 0.14.0
 
 - Removed answer checks (`agent.answerCheck`, the `answerCheck` tool field and the `answer-check` / `answer-recheck` run-log lines). A command that rewrites an agent's answer after the fact hides why the answer was wrong instead of fixing the prompt that produced it, and no job used it. A stored job that still names one keeps running; the field is dropped at its next edit.

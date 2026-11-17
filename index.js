@@ -71,8 +71,9 @@ export function apply(ctx, config) {
         jobs: config.jobs ?? [],
         logger,
         run: runCommand,
-        wake: request => openAgentSession(ctx, request, logger),
-        reuse: request => deliverToSession(ctx, request),
+        // Both wait for session services DSH has not registered yet (a run at startup).
+        wake: request => openAgentSession(ctx, request, logger, { signal: controller.signal }),
+        reuse: request => deliverToSession(ctx, request, { signal: controller.signal }),
         settle: (sessionId, options) => archiveWhenIdle(ctx, sessionId, options),
         // The channel is found by name at send time, so it may load after
         // this plugin, reload, or be missing for a while (the delivery waits).
