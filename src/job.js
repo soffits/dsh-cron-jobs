@@ -103,7 +103,7 @@ export class JobRunner {
    * @param {(request: { sessionId: string, text: string, mayUnarchive: boolean, ignoreHold?: boolean }) => Promise<{ queued?: boolean }>} [deps.reuse] - Sends the prompt into an existing session (see session.js deliverToSession); without it every wake opens a new session.
    * @param {(sessionId: string) => Promise<void>} [deps.keepSession] - Saves the session a new_once job opened, so later runs go to it.
    * @param {(sessionId: string, options: { signal?: AbortSignal, isLatest: () => boolean, lock: Function }) => Promise<{ archive: string, note?: string }>} [deps.settle] - Archives a session after its turn (see session.js archiveWhenIdle); without it nothing is archived.
-   * @param {(target: { via: string, to: string }, message: { text: string, files: string[] }, from: { job: string, sessionId?: string }, options: { waitMs?: number, onWait?: Function }) => Promise<{ status: 'sent' | 'failed' | 'unavailable' | 'stopped', attempts: number, error?: string }>} [deps.send] - Hands a result to its delivery service (see deliver.js sendMessage); without it nothing is delivered.
+   * @param {(target: { via: string, to: string }, message: { text: string, files: string[] }, from: { job: string, jobId: string, sessionId?: string, runId?: string }, options: { cwd?: string, waitMs?: number, onWait?: Function }) => Promise<{ status: 'sent' | 'failed' | 'unavailable' | 'stopped', attempts: number, error?: string }>} [deps.send] - Hands a result to its delivery service (see deliver.js sendMessage); without it nothing is delivered.
    * @param {(sessionId: string, messageId: string, options: { signal?: AbortSignal }) => Promise<{ pending: true } | { text: string, reason?: string } | { error: string }>} [deps.answer] - Waits for the final answer to a prompt (see session.js waitForAnswer).
    * @param {{ agentCwd?: string, autoArchive?: boolean, reuseWithinHours?: number, deliver?: object, problems?: { deliver?: object | false } }} [deps.defaults] - Plugin-level agent settings, the default delivery target, and where problem notes go.
    * @param {(problem: object, triggers: string[]) => boolean} [deps.reportProblem] - Emits a problem note as an event (see CronJobs.reportProblem); true when a job took it.
@@ -176,7 +176,7 @@ export class JobRunner {
       if (outcome.status === 'woke' && outcome.messageId && outcome.sessionId && this.answer !== undefined) {
         outcome = { ...outcome, turn: { status: 'pending', messageId: outcome.messageId } }
       }
-      outcome = await this.deliverResult(outcome, result, { rerun: rerunOf !== undefined })
+      outcome = await this.deliverResult(outcome, result, { rerun: rerunOf !== undefined, runId })
       return outcome
     } catch (error) {
       thrown = describeError(error)
@@ -246,7 +246,7 @@ export class JobRunner {
    * A gate that decided not to wake, and a run stopped by an unload, send
    * nothing.
    */
-  async deliverResult({ messageId, ...outcome }, result, { rerun = false } = {}) {
+  async deliverResult({ messageId, ...outcome }, result, { rerun = false, runId } = {}) {
     const { job } = this
     if (outcome.status === 'woke') {
       const target = this.deliveryTarget()
@@ -273,7 +273,7 @@ export class JobRunner {
     if (message === undefined) return { ...outcome, delivery: { status: 'silent', ...where } }
     // No waiting inside the run: a missing service is waited for in the
     // background (see watchDelivery), with the message kept for a restart.
-    const delivery = await this.deliverMessage(target, message, { waitMs: 0 })
+    const delivery = await this.deliverMessage(target, message, { runId, waitMs: 0 })
     return { ...outcome, delivery: delivery.status === 'pending' ? { ...delivery, message } : delivery }
   }
 
@@ -310,12 +310,15 @@ export class JobRunner {
    * wait: `failed`.
    * @param {{ via: string, to: string }} target
    * @param {{ text: string, files: string[] }} message
-   * @param {{ sessionId?: string, waitMs?: number, onWait?: (error: string) => void }} options
+   * @param {{ sessionId?: string, runId?: string, waitMs?: number, onWait?: (error: string) => void }} options
    */
-  async deliverMessage(target, message, { sessionId, waitMs, onWait }) {
+  async deliverMessage(target, message, { sessionId, runId, waitMs, onWait }) {
     const { job, logger } = this
-    const sent = await this.send(target, message, { job: job.name, jobId: jobKey(job), ...(sessionId ? { sessionId } : {}) }, {
-      ...(waitMs !== undefined ? { waitMs } : {}), ...(onWait ? { onWait } : {}),
+    // A command channel runs where the result came from: the woken session's directory, or the command's.
+    const cwd = (sessionId ? agentSettings(job, this.defaults).cwd : job.cwd) || undefined
+    const from = { job: job.name, jobId: jobKey(job), ...(sessionId ? { sessionId } : {}), ...(runId ? { runId } : {}) }
+    const sent = await this.send(target, message, from, {
+      ...(cwd ? { cwd } : {}), ...(waitMs !== undefined ? { waitMs } : {}), ...(onWait ? { onWait } : {}),
     })
     const where = describeTarget(target)
     const pending = sent.status === 'stopped' || (sent.status === 'unavailable' && waitMs === 0)
@@ -413,7 +416,7 @@ export class JobRunner {
       this.history.update(jobKey(job), runId, { delivery: { ...pending, error } })
         .then(() => this.logDelivery(sessionId, target, { status: 'waiting', error })).catch(() => {})
     }
-    const delivery = await this.deliverMessage(target, message, { sessionId, onWait })
+    const delivery = await this.deliverMessage(target, message, { sessionId, runId, onWait })
     // Unloading: the next copy of the plugin sends it, from the kept message
     // (the turn it came from is already recorded as ended).
     if (delivery.status === 'pending') {

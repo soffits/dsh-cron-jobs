@@ -101,7 +101,7 @@ Config jobs live in the config of the `cron-jobs` row. Add an override to your p
 | `cwd` | Working directory of the command. The Host process directory when empty. |
 | `timeoutSeconds` | Stop the command (and everything it started) after this long. Default 3600; `0` means no limit. |
 | `enabled` | `false` keeps the job in the config without scheduling it. Default `true`. |
-| `deliver` | Where the job's result is sent: `{ via: <service name>, to: <address> }`, or `false` for nothing. Unset: the row's `deliver`, except for jobs with `agent.sessionId`, which send nothing. See [Result delivery](#result-delivery). |
+| `deliver` | Where the job's result is sent: `{ via: <service name>, to: <address> }` (or `{ via: command, to: <command line> }`, see [The command channel](#the-command-channel)), or `false` for nothing. Unset: the row's `deliver`, except for jobs with `agent.sessionId`, which send nothing. See [Result delivery](#result-delivery). |
 | `agent.prompt` | With a command, makes the job a gated job; without one, an agent job. The prompt sent to the session. |
 | `agent.sessionId` | Send the prompt into this existing session instead of opening a new one. Such a session is never auto-archived. |
 | `agent.preset` | Agent preset of the new session. The Host default when empty. |
@@ -241,6 +241,25 @@ export function apply(ctx) {
 ```
 
 and point a job at it with `deliver: { via: myChannel, to: <address> }`.
+
+`from.runId` names the run the result belongs to (when the run history has one), the same for every retry and for a delivery resumed after a restart, so a channel can drop a result it already took.
+
+### The command channel
+
+One channel is built in: `via: command` runs `to` as a shell command and hands it the result, for a channel that is a CLI rather than a plugin (a notification router, a mailer, a script):
+
+```yaml
+deliver:
+  via: command
+  to: my-notify --from-job
+```
+
+In the tools and in declared sets the same target is `command:my-notify --from-job`.
+
+- The command gets one JSON document on stdin, the object a service's `send` gets: `{ to, text, files, from }`.
+- It runs with `bash -c` (or `sh -c`) in the directory the result came from: the woken session's for agent and gated jobs, the job's `cwd` for command jobs. `DSH_CRON_JOB` is the job's name, and `DSH_SESSION_ID` the session that wrote the answer (unset for command jobs), so a DSH tool the command calls credits that session.
+- Exit 0 means sent. Any other exit is a failed attempt and is retried like a service that throws, with the end of stderr as the error; exit 126 or 127 (the command could not run) is not retried. A command running longer than 5 minutes is stopped and counts as failed.
+- `command` is not looked up as a service, so a plugin providing a service of that name is never used for delivery.
 
 ## Schedules
 

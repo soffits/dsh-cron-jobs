@@ -16,6 +16,7 @@ import { Config } from './src/config.js'
 import { runCommand } from './src/command.js'
 import { archiveWhenIdle, deliverToSession, openAgentSession, waitForAnswer } from './src/session.js'
 import { sendMessage } from './src/deliver.js'
+import { channelProblem, findChannel } from './src/channels.js'
 import { CronJobs } from './src/controller.js'
 import { createRunLog } from './src/runlog.js'
 import { openHistory } from './src/history.js'
@@ -79,7 +80,9 @@ export function apply(ctx, config) {
         settle: (sessionId, options) => archiveWhenIdle(ctx, sessionId, options),
         // The channel is found by name at send time, so it may load after
         // this plugin, reload, or be missing for a while (the delivery waits).
-        send: (target, message, from, options) => sendMessage({ lookup: name => ctx.get(name), target, message, from, signal: controller.signal, ...options }),
+        send: (target, message, from, { cwd, ...options } = {}) => sendMessage({
+          lookup: name => findChannel(name, { get: service => ctx.get(service), cwd }), target, message, from, signal: controller.signal, ...options,
+        }),
         answer: (sessionId, messageId, options) => waitForAnswer(ctx, sessionId, messageId, options),
         defaults: {
           agentCwd: config.defaultAgentCwd || undefined,
@@ -149,13 +152,7 @@ export function apply(ctx, config) {
   })
 }
 
-/** Why a declared job's delivery target can't be used now, or undefined when its service can send. */
+/** Why a declared job's delivery target can't be used now, or undefined when its channel can send. */
 function canDeliver(ctx, target) {
-  let service
-  try {
-    service = ctx.get(target.via)
-  } catch {
-    service = undefined
-  }
-  return typeof service?.send === 'function' ? undefined : `no running service ${JSON.stringify(target.via)} can deliver messages`
+  return channelProblem(target, name => ctx.get(name))
 }
