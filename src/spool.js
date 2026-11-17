@@ -55,7 +55,7 @@ export async function waitForEventResult(id, { dir, timeoutMs }) {
  * Plugin side: read events from the inbox, oldest first.
  * @param {object} options
  * @param {string} options.dir
- * @param {(input: object, ack: () => void) => { matched: string[], duplicate?: boolean }} options.handle - Dispatches one event; calls ack once the event may be deleted. Throws for a malformed event.
+ * @param {(input: object, ack: () => void) => object | Promise<object>} options.handle - Dispatches one file (an event, or a request: requests.js); calls ack once it may be deleted. Its result is written for a waiting sender. Throws for a malformed file.
  * @param {(error: unknown) => void} options.onError
  * @param {number} [options.intervalMs] - Rescan period; file watching only speeds it up.
  */
@@ -112,7 +112,7 @@ export function createEventSpool({ dir, handle, onError, intervalMs = 1000 }) {
       }
       try {
         input = JSON.parse(await readFile(claimed, 'utf8'))
-        const result = handle(input, ack)
+        const result = await handle(input, ack)
         outcome = { ok: true, ...result }
       } catch (error) {
         if (error?.code === 'unavailable') {

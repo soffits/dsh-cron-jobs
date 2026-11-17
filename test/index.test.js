@@ -16,8 +16,9 @@ function makeCtx() {
   const storageDomain = {
     async open(spec) {
       opened.push(spec.name)
-      const table = memoryTable()
-      return { table: () => table, close: async () => { closed.push(spec.name) } }
+      const tables = new Map()
+      const table = name => tables.get(name) ?? tables.set(name, memoryTable()).get(name)
+      return { table, close: async () => { closed.push(spec.name) } }
     },
   }
   const handlers = new Map()
@@ -98,4 +99,24 @@ test('dsh.started fires once per process, and the inbox feeds jobs', async () =>
   const listed = await (await second.handlers.get(`${CHANNEL}/list`).fetch(new Request('http://dsh.test/', { method: 'POST', body: '{}' }))).json()
   assert.equal(listed.value.jobs[0].lastRun, null)
   await second.effects[0]()
+})
+
+test('the request inbox applies a declared set and refuses an unknown delivery service', async () => {
+  const { enqueueEvent, waitForEventResult } = await import('../src/spool.js')
+  const { defaultRequestDir } = await import('../src/requests.js')
+  const { ctx, effects, handlers } = makeCtx()
+  ctx.get = name => (name === 'telegramTopics' ? { send: async () => ({}) } : undefined)
+  apply(ctx, Config({}))
+  const dir = defaultRequestDir()
+  const ask = async jobs => waitForEventResult(await enqueueEvent({ type: 'declared', set: 'home', jobs }, { dir, wait: true }), { dir, timeoutMs: 3000 })
+  const job = { key: 'backup', title: 'Backup', command: 'true', cron: '0 3 * * *', timeZone: 'UTC', deliver: 'telegramTopics:42' }
+  const done = await ask([job])
+  assert.equal(done.ok, true, done.error)
+  assert.equal(done.result.create[0].key, 'backup')
+  const refused = await ask([{ ...job, deliver: 'nowhere:1' }])
+  assert.equal(refused.ok, false)
+  assert.match(refused.error, /nowhere/u)
+  const listed = await (await handlers.get(`${CHANNEL}/list`).fetch(new Request('http://dsh.test/', { method: 'POST', body: '{}' }))).json()
+  assert.deepEqual(listed.value.jobs.map(view => [view.name, view.declared]), [['Backup', { set: 'home', key: 'backup' }]])
+  await effects[0]()
 })

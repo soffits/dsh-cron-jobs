@@ -5,7 +5,8 @@
   "type": "module",
   "main": "./index.js",
   "bin": {
-    "dsh-cron-event": "./bin/dsh-cron-event.js"
+    "dsh-cron-event": "./bin/dsh-cron-event.js",
+    "dsh-cron-apply": "./bin/dsh-cron-apply.js"
   },
   "exports": {
     ".": "./index.js",

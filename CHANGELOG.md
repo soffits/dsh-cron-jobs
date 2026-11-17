@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Declared sets: `dsh-cron-apply --set <name> --file <jobs.json>` makes a group of stored jobs match a list kept in a file, like `kubectl apply --prune`. New keys are created, changed fields are updated (and only those), members that left the list are removed, and nothing outside the set is touched. `--dry-run` prints the plan. An entry can `adopt` an existing tool-made job so its id and run history carry over. Members show `declared` in the list, view and page data. See "Declared sets" in the README.
+- Stored jobs can now carry `timeoutSeconds` and `preset` from a declared set; the tools are unchanged.
+
 ## 0.16.0
 
 - Ended jobs clean themselves up. A job made with the tools whose schedule has run out (a one-time `at`, a bounded RRULE, a `once` job that has fired) is removed, with its run history, `endedRetentionHours` after it ended. The new row setting defaults to 24; `0` keeps ended jobs until they are deleted by hand, as before, and fractions such as `0.5` work. The check runs every minute and at startup, so a job that expired while DSH was down is removed on the next start. Config jobs, paused jobs and active jobs are never removed, and neither is a job whose last run is still going or still waiting to deliver its result.
