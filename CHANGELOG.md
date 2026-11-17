@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.18.0
 
 - A built-in `command` channel: `deliver: { via: command, to: <command line> }` (or `command:<command line>` in the tools and declared sets) hands a job's result to a shell command instead of a plugin, so a notification router, a mailer or any CLI can take job results. The command gets the same JSON a channel service gets on stdin, runs in the directory the result came from, and exit 0 counts as sent; other exits are retried like a failing service. See "The command channel" in the README.
 - Deliveries now carry `runId` in `from`, the run the result belongs to, so a channel can tell a resent result from a new one.
