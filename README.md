@@ -277,7 +277,6 @@ A job can run when something happens instead of checking on a timer. Give it `on
 ```yaml
 - name: Mailbox
   on: [mail.me]
-  cron: '0 */2 * * *'      # slow safety net in case an event is missed
   command: ./mail-gate.sh
   agent:
     prompt: Handle the new mail.
@@ -306,7 +305,7 @@ If the job is still working when its batch is ready (a run is going, or the agen
 
 **Built-in events.** `dsh.started` is emitted once per DSH process, when the scheduler first starts (not on a plugin reload). A one-off "check DSH after the restart" job becomes `on: [dsh.started], once: true`, instead of a guessed time. `dsh.turn.started` and `dsh.turn.ended` are emitted when a turn starts or ends in any session (subagents and jobs' sessions included), with `data.sessionId`, and only while a job listens on them: a view of what is running follows the sessions instead of polling them. A job that opens sessions itself and listens to these events runs again for its own turns, so listen from a command job that opens none.
 
-**Delivery and safety.** An inbox file is kept (as `.processing`) until every run it started has begun, so a restart in between reads it again. Events from watchers are not kept; each watcher catches up from its own cursor when it starts (below). Either way the job's slower schedule is the safety net for anything missed.
+**Delivery and safety.** An inbox file is kept (as `.processing`) until every run it started has begun, so a restart in between reads it again. Events from watchers are not kept; each watcher catches up from its own cursor when it starts (below). A lost event is a bug in the source or its watcher to fix there; a timer added "just in case" would hide it and wake the job for nothing. Give a job a schedule only when the clock is part of the work (a daily rollover) or when its source cannot send events and has to be polled.
 
 ### Watchers
 
