@@ -455,7 +455,7 @@ window.__ModuleLoader__.load({
 @media (width<=1100px){.dcj-detail{--detail-gutter:20px}}
 @media (width<=760px){.dcj-hasDetails .dcj-listPane{display:none}.dcj-detail{border-left:0;flex-basis:100%}.dcj-detailScroll{padding-top:20px}}
 @media (width<=400px){.dcj-detail{--detail-gutter:16px}.dcj-detailTabsBar{gap:16px}}
-@media (pointer:coarse){.dcj-searchField input{font-size:16px}}
+@media (pointer:coarse){.dcj-searchField input{font-size:16px}.dcj-filterTab,.dcj-btn,.dcj-btnSm,.dcj-iconButton,.dcj-footerLink,.dcj-menuItem{min-height:40px}.dcj-iconButton{min-width:40px}.dcj-filters{gap:4px 8px}}
 `
 
     // ------------------------------------------------------------- helpers

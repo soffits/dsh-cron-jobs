@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- On touch screens the filter tabs, buttons, menu items and the footer link are at least 40px tall.
+
 ## 0.15.0
 
 - A row-level `problems` setting decides where failure notes go: `problems.channel` emits each one (failed command or gate, failed wake or rerun, watcher down or back) as an event an agent job can take with `on`, and `problems.deliver` sends them to their own target, or with `false` nowhere once a job took the event. Unset, notes go to the job's target as before.
