@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.19.0
 
 - `dsh-cron-apply --set <name> --release` lets go of a declared set: its members become ordinary stored jobs (same ids, history, schedules and pause state), nothing is deleted, and the tools edit them as any other job. `--dry-run` lists them first.
 
