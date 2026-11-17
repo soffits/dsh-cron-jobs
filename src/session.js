@@ -9,10 +9,11 @@ import { finalAnswer } from './deliver.js'
  * follow-up (which starts a turn), and wait until session persistence has
  * stored the message.
  *
- * Uses only public Host services, read with `ctx.get()` so that hosts
- * without them still run plain jobs:
- * `sessionController` (required), `sessions` (required), `agents`,
- * `workspaceRegistry`, `sessionTitle`, `llm` (optional).
+ * Uses only public Host services, so that hosts without them still run
+ * plain jobs: `sessionController` and `sessions` (required), `agents`,
+ * `workspaceRegistry`, `sessionTitle`, and `llm` when a model is requested.
+ * Every one is read through {@link sessionServices}, which waits for a
+ * service the host has not registered yet (a run right after a DSH start).
  *
  * A requested model is checked with `llm.resolveCallConfig()` before the
  * session is created, then set on the new session's agent with
@@ -30,16 +31,19 @@ import { finalAnswer } from './deliver.js'
  * @param {string} [request.cwd] - Session directory; the host default when omitted.
  * @param {{ provider: string, model: string, reasoningEffort?: string }} [request.model] - Model of the session; the preset or host default when omitted.
  * @param {{ warn: Function }} logger
+ * @param {ServiceWait} [wait]
  * @returns {Promise<string>} The new session id.
  */
-export async function openAgentSession(ctx, { text, messageId, principal, title, agentPreset, cwd, model }, logger) {
-  const controller = ctx.get('sessionController')
-  const sessions = ctx.get('sessions')
+export async function openAgentSession(ctx, { text, messageId, principal, title, agentPreset, cwd, model }, logger, wait = {}) {
+  const { sessionController: controller, sessions, agents, workspaceRegistry, sessionTitle, llm } = await sessionServices(ctx, {
+    required: ['sessionController', 'sessions', ...(model !== undefined ? ['llm'] : [])],
+    optional: ['agents', 'workspaceRegistry', 'sessionTitle'],
+  }, wait)
   if (controller === undefined || sessions === undefined) {
     throw new Error('this host cannot create sessions (no sessionController service)')
   }
   const open = async () => {
-    if (model !== undefined) await checkModel(ctx, model)
+    if (model !== undefined) await checkModel(llm, model)
     const { sessionId } = await controller.create({
       ...(cwd ? { cwd } : {}),
       ...(agentPreset ? { agentPreset } : {}),
@@ -49,8 +53,8 @@ export async function openAgentSession(ctx, { text, messageId, principal, title,
     const { agent } = resolved
     if (model !== undefined) agent.model.select({ ...model })
 
-    await joinWorkspace(ctx, sessionId, cwd, logger)
-    nameSession(ctx, agent, title, logger)
+    await joinWorkspace(workspaceRegistry, sessionId, cwd, logger)
+    nameSession(sessionTitle, agent, title, logger)
 
     agent.followup(userMessage(text, messageId, principal))
     if (!await sessions.flush(agent.session)) {
@@ -60,7 +64,6 @@ export async function openAgentSession(ctx, { text, messageId, principal, title,
   }
   // A timer callback has no initiating agent; clearing it anyway keeps the new
   // session a top-level session rather than a child of whatever is running.
-  const agents = ctx.get('agents')
   return agents === undefined ? open() : agents.withoutInitiator(open)
 }
 
@@ -87,12 +90,15 @@ export async function openAgentSession(ctx, { text, messageId, principal, title,
  * @param {object} [request.principal] - Who sends the message, recorded on its source.
  * @param {boolean} [request.mayUnarchive]
  * @param {boolean} [request.ignoreHold] - Deliver even to a pinned session or one a person uses.
+ * @param {ServiceWait} [wait]
  * @returns {Promise<{ sessionId: string, queued: boolean, unarchived: boolean }>}
  *   `queued`: the session was busy and the message waits for its next turn.
  */
-export async function deliverToSession(ctx, { sessionId, text, messageId, principal, mayUnarchive = false, ignoreHold = false }) {
-  const controller = ctx.get('sessionController')
-  const sessions = ctx.get('sessions')
+export async function deliverToSession(ctx, { sessionId, text, messageId, principal, mayUnarchive = false, ignoreHold = false }, wait = {}) {
+  const { sessionController: controller, sessions, agents, workspaceRegistry: registry } = await sessionServices(ctx, {
+    required: ['sessionController', 'sessions'],
+    optional: ['agents', 'workspaceRegistry'],
+  }, wait)
   if (controller === undefined || sessions === undefined) {
     throw new Error('this host cannot resume sessions (no sessionController service)')
   }
@@ -100,9 +106,8 @@ export async function deliverToSession(ctx, { sessionId, text, messageId, princi
     const resolved = await controller.resolveAgent(sessionId)
     if ('error' in resolved) throw resolved.error
     const { agent } = resolved
-    const hold = ignoreHold ? undefined : userHold(ctx, sessionId, agent.session)
+    const hold = ignoreHold ? undefined : userHold(registry, sessionId, agent.session)
     if (hold !== undefined) throw new Error(`the session is in use (${hold})`)
-    const registry = ctx.get('workspaceRegistry')
     const archived = registry?.archivedSessionIds?.includes(sessionId) === true
     if (archived) {
       if (!mayUnarchive) throw new Error('the session is archived')
@@ -115,7 +120,6 @@ export async function deliverToSession(ctx, { sessionId, text, messageId, princi
     }
     return { sessionId, queued, unarchived: archived }
   }
-  const agents = ctx.get('agents')
   return agents === undefined ? deliver() : agents.withoutInitiator(deliver)
 }
 
@@ -128,13 +132,13 @@ export async function deliverToSession(ctx, { sessionId, text, messageId, princi
  * results) have their own kinds. Such a session is neither archived nor
  * reused.
  *
- * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {{ pinnedSessionIds?: string[] } | undefined} registry - The Workspace registry, when the host has one.
  * @param {string} sessionId
  * @param {{ log?: Array<{ type: string, data?: any }> }} [session] - The live session, to read its message log.
  * @returns {string | undefined}
  */
-export function userHold(ctx, sessionId, session) {
-  if (ctx.get('workspaceRegistry')?.pinnedSessionIds?.includes(sessionId)) return 'pinned'
+export function userHold(registry, sessionId, session) {
+  if (registry?.pinnedSessionIds?.includes(sessionId)) return 'pinned'
   if (session?.log?.some(event => event.type === 'user/message' && event.data?.source?.kind === 'user')) {
     return 'taken over by a person'
   }
@@ -189,7 +193,7 @@ export async function archiveWhenIdle(ctx, sessionId, {
     if (turnCutByShutdown(agent.session?.log ?? [])) return { archive: 'kept', note: 'its turn was cut off by a DSH stop' }
     const result = await lock(async () => {
       if (!isLatest()) return { archive: 'superseded' }
-      const hold = userHold(ctx, sessionId, agent.session)
+      const hold = userHold(registry, sessionId, agent.session)
       if (hold !== undefined) return { archive: 'kept', note: hold }
       try {
         await registry.archiveSession(sessionId)
@@ -280,6 +284,38 @@ export async function hostService(ctx, name, { signal, waitMs = SERVICE_WAIT_MS,
   }
 }
 
+/** How long an optional service is waited for once the required ones are there. */
+export const OPTIONAL_SERVICE_WAIT_MS = 10_000
+
+/**
+ * @typedef {object} ServiceWait
+ * @property {AbortSignal} [signal] - Plugin unload: stop waiting.
+ * @property {number} [waitMs] - Wait for a required service; {@link SERVICE_WAIT_MS} by default.
+ * @property {number} [optionalWaitMs] - Wait for an optional one after that; {@link OPTIONAL_SERVICE_WAIT_MS} by default.
+ * @property {number} [pollMs]
+ */
+
+/**
+ * Read the Host services a session path needs, waiting for them the way
+ * {@link hostService} does: a job that fires while DSH is still starting
+ * (a catch-up run, an event from a watcher) would otherwise find no
+ * `sessionController` and fail (2026-11-16, a check-in's catch-up run ten
+ * seconds after a restart). Required services are waited for fully; optional
+ * ones, which come from other plugins of the same start, a short time more,
+ * so a host that lacks one still runs jobs without a long delay.
+ *
+ * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {{ required: string[], optional?: string[] }} names
+ * @param {ServiceWait} [wait]
+ * @returns {Promise<Record<string, any>>} Each name mapped to its service, or undefined.
+ */
+export async function sessionServices(ctx, { required, optional = [] }, { signal, waitMs = SERVICE_WAIT_MS, optionalWaitMs = OPTIONAL_SERVICE_WAIT_MS, pollMs } = {}) {
+  const read = (names, ms) => Promise.all(names.map(name => hostService(ctx, name, { signal, waitMs: ms, ...(pollMs !== undefined ? { pollMs } : {}) })))
+  const found = await read(required, waitMs)
+  const extra = await read(optional, found.every(service => service !== undefined) ? optionalWaitMs : 0)
+  return Object.fromEntries([...required, ...optional].map((name, i) => [name, i < found.length ? found[i] : extra[i - found.length]]))
+}
+
 function sleep(ms, signal) {
   return new Promise((resolve) => {
     const timer = setTimeout(done, ms)
@@ -317,8 +353,7 @@ export function userMessage(text, id = randomUUID(), principal) {
 }
 
 /** Reject a model the host cannot route, before any session is created. */
-async function checkModel(ctx, model) {
-  const llm = ctx.get('llm')
+async function checkModel(llm, model) {
   if (llm === undefined) throw new Error('this host cannot select models (no llm service)')
   try {
     await llm.resolveCallConfig({ ...model })
@@ -328,8 +363,7 @@ async function checkModel(ctx, model) {
   }
 }
 
-async function joinWorkspace(ctx, sessionId, cwd, logger) {
-  const registry = ctx.get('workspaceRegistry')
+async function joinWorkspace(registry, sessionId, cwd, logger) {
   if (registry === undefined || !cwd) return
   try {
     await (await registry.resolveByPath(cwd))?.attachSession(sessionId)
@@ -338,8 +372,7 @@ async function joinWorkspace(ctx, sessionId, cwd, logger) {
   }
 }
 
-function nameSession(ctx, agent, title, logger) {
-  const titles = ctx.get('sessionTitle')
+function nameSession(titles, agent, title, logger) {
   if (titles === undefined) return
   try {
     titles.rename(agent.session, title)

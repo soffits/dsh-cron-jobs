@@ -92,7 +92,45 @@ test('an unavailable model fails before any session is created', async () => {
 })
 
 test('fails clearly without a session controller', async () => {
-  await assert.rejects(openAgentSession({ get: () => undefined }, { text: 't', title: 'x' }, logger), /cannot create sessions/)
+  await assert.rejects(openAgentSession({ get: () => undefined }, { text: 't', title: 'x' }, logger, { waitMs: 0 }), /cannot create sessions/)
+  await assert.rejects(deliverToSession({ get: () => undefined }, { sessionId: 's', text: 't' }, { waitMs: 0 }), /cannot resume sessions/)
+})
+
+// 2026-11-16: a catch-up run fired ten seconds after a DSH start, before the
+// session services were registered, and failed with "no sessionController".
+test('a run at startup waits for the session services instead of failing', async () => {
+  const fresh = fakeHost()
+  let ready = false
+  setTimeout(() => { ready = true }, 40)
+  const late = { get: name => (ready ? fresh.ctx.get(name) : undefined) }
+  const model = { provider: 'p', model: 'm' }
+  assert.equal(await openAgentSession(late, { text: 't', title: 'x', cwd: '/w', model }, logger, { pollMs: 5 }), 'session-new')
+  assert.deepEqual(fresh.calls.map(call => call[0]), [
+    'withoutInitiator', 'checkModel', 'create', 'resolveAgent', 'selectModel', 'resolveByPath', 'attachSession', 'rename', 'followup', 'flush',
+  ])
+
+  const old = existingHost({ pinned: ['session-old'] })
+  ready = false
+  setTimeout(() => { ready = true }, 40)
+  const lateOld = { get: name => (ready ? old.ctx.get(name) : undefined) }
+  // The registry arrives with the rest, so the pin is still seen.
+  await assert.rejects(deliverToSession(lateOld, { sessionId: 'session-old', text: 't' }, { pollMs: 5 }), /pinned/)
+  ready = false
+  setTimeout(() => { ready = true }, 40)
+  assert.equal((await deliverToSession(lateOld, { sessionId: 'session-old', text: 't', ignoreHold: true }, { pollMs: 5 })).sessionId, 'session-old')
+})
+
+test('a missing optional service is waited for only briefly, and an unload stops the wait', async () => {
+  const { ctx, calls } = fakeHost()
+  const bare = { get: name => (name === 'sessionTitle' || name === 'agents' ? undefined : ctx.get(name)) }
+  const started = Date.now()
+  await openAgentSession(bare, { text: 't', title: 'x' }, logger, { optionalWaitMs: 30, pollMs: 5 })
+  assert.ok(Date.now() - started < 1000)
+  assert.equal(calls.some(call => call[0] === 'rename'), false)
+
+  const unload = new AbortController()
+  setTimeout(() => unload.abort(), 20)
+  await assert.rejects(openAgentSession({ get: () => undefined }, { text: 't', title: 'x' }, logger, { signal: unload.signal }), /cannot create sessions/)
 })
 
 test('rejects when the agent cannot be resolved or the message is not stored', async () => {
@@ -139,6 +177,7 @@ function existingHost({ status = 'idle', archived = [], pinned = [], log = [], r
   const services = {
     sessionController: { async resolveAgent(id) { calls.push(['resolveAgent', id]); return resolveError ? { error: resolveError } : { agent } } },
     sessions: { async flush() { calls.push(['flush']); return true } },
+    agents: { withoutInitiator: fn => fn() },
     workspaceRegistry: registry,
   }
   return { ctx: { get: key => services[key] }, calls, registry }
@@ -171,15 +210,15 @@ test('deliverToSession unarchives first when allowed', async () => {
 })
 
 test('userHold ignores machine messages and this plugin\'s own prompts', () => {
-  const ctx = { get: () => undefined }
+  const registry = undefined
   const log = [
     { type: 'user/message', data: { source: { kind: 'schedule' } } },
     { type: 'user/message', data: { source: { kind: 'runtime-context' } } },
     { type: 'user/message', data: { source: { kind: 'subagent-settled' } } },
     { type: 'assistant/message', data: {} },
   ]
-  assert.equal(userHold(ctx, 's', { log }), undefined)
-  assert.equal(userHold(ctx, 's', { log: [...log, { type: 'user/message', data: { source: { kind: 'user', rpcId: 'r' } } }] }), 'taken over by a person')
+  assert.equal(userHold(registry, 's', { log }), undefined)
+  assert.equal(userHold(registry, 's', { log: [...log, { type: 'user/message', data: { source: { kind: 'user', rpcId: 'r' } } }] }), 'taken over by a person')
 })
 
 test('archiveWhenIdle waits for the turn, and still archives after a failed turn', async () => {
