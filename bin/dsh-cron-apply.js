@@ -20,7 +20,7 @@ whose fields differ are changed, members of the set that left the list are
 removed. Jobs made with the tools and other sets are never touched.
 
 Each job: key (stable name in the set), title, prompt and/or command, cron +
-timeZone | rrule | at, on, once, coalesceSeconds, cwd, preset, target
+timeZone | rrule | at, on, once, coalesceSeconds, maxRunsPerHour, cwd, preset, target
 (new | new_once) or sessionId, deliver ("<service>:<address>", "none", or
 "default"), model {provider, model, reasoningEffort}, timeoutSeconds, paused,
 and adopt (the id of a tool-made job to take over, keeping its history).

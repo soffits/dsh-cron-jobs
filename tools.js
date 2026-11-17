@@ -53,6 +53,7 @@ export function toolSchemas(prefix) {
     },
     once: { type: 'boolean', description: 'End the job after its first run that was not started by hand (an event or a scheduled run). With on: dsh.started, it waits for the next DSH start.' },
     coalesceSeconds: { type: 'number', description: 'How long events for this job gather, counted from the first one, before it runs once with all of them (for example 900 for a quarter of an hour). 0 runs at once. Left out, the plugin\'s events.coalesceSeconds (30 by default) applies. Only matters with on.' },
+    maxRunsPerHour: { type: 'number', description: 'Most event-started runs of this job in any hour; past that, its events wait and run together when the oldest of those runs is an hour old. 0 means no cap. Left out, the plugin\'s events.maxRunsPerHour (6 by default) applies. Only matters with on.' },
   }
   const model = {
     type: 'object',
@@ -119,6 +120,7 @@ export function toolSchemas(prefix) {
       on: { ...fields.on, description: `New event channels, as in ${prefix}_create; an empty list removes them.` },
       once: fields.once,
       coalesceSeconds: { ...fields.coalesceSeconds, description: `New event gathering time in seconds, as in ${prefix}_create. A negative number (-1) removes the job's own setting, so the plugin's default applies again.` },
+      maxRunsPerHour: { ...fields.maxRunsPerHour, description: `New hourly cap on event runs, as in ${prefix}_create. A negative number (-1) removes the job's own setting, so the plugin's default applies again.` },
     }, ['id', 'action']),
     list: object({}, []),
     view: object({ id: { type: 'string', description: 'Job id.' } }, ['id']),
@@ -166,6 +168,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
         ...(args.on !== undefined ? { on: args.on } : {}),
         ...(args.once !== undefined ? { once: args.once } : {}),
         ...(args.coalesceSeconds !== undefined ? { coalesceSeconds: args.coalesceSeconds } : {}),
+        ...(args.maxRunsPerHour !== undefined ? { maxRunsPerHour: args.maxRunsPerHour } : {}),
         cwd: args.cwd || callerCwd(agent),
         preset: callerPreset(agent),
         ...(toModel(args.model) ? { model: toModel(args.model) } : {}),
@@ -178,7 +181,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
       `Update, pause, resume or delete one job created with ${prefix}_create, by id. Jobs from the plugin config are read-only.`,
       async (args, jobs, agent) => {
         const { id, action } = args
-        const changes = ['title', 'prompt', 'command', 'prompt_replace', 'command_replace', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver', 'model', 'on', 'once', 'coalesceSeconds'].filter(key => args[key] !== undefined)
+        const changes = ['title', 'prompt', 'command', 'prompt_replace', 'command_replace', 'cron', 'rrule', 'at', 'timeZone', 'target', 'sessionId', 'cwd', 'deliver', 'model', 'on', 'once', 'coalesceSeconds', 'maxRunsPerHour'].filter(key => args[key] !== undefined)
         if (action !== 'update' && changes.length > 0) return failure('invalid_arguments', `${action} takes only id and action.`)
         if (action === 'delete') return await jobs.remove(id)
         if (action === 'pause' || action === 'resume') {
@@ -208,6 +211,7 @@ export function createTools({ prefix = 'cron_job', getJobs, ctx }) {
           on: args.on,
           once: args.once,
           ...(args.coalesceSeconds !== undefined ? { coalesceSeconds: args.coalesceSeconds < 0 ? null : args.coalesceSeconds } : {}),
+          ...(args.maxRunsPerHour !== undefined ? { maxRunsPerHour: args.maxRunsPerHour < 0 ? null : args.maxRunsPerHour } : {}),
           ...(args.model !== undefined ? { model: toModel(args.model) ?? null } : {}),
           ...(scheduleGiven ? { schedule: { cron: args.cron, rrule: args.rrule, at: args.at, timeZone: args.timeZone } } : {}),
           ...(targetGiven ? { target: await resolveTarget(ctx, agent, args.target ?? 'new', args.sessionId) } : {}),
@@ -358,6 +362,7 @@ export function modelJob(job, { brief = false } = {}) {
     ...(job.removesAt ? { removesAt: job.removesAt } : {}),
     ...(job.declared ? { declared: `${job.declared.set}/${job.declared.key}`, declaredNote: 'Declared in a set kept elsewhere: the next apply of that set puts back any field changed here, so change its source instead.' } : {}),
     ...(job.coalesceEffectiveSeconds !== null && job.coalesceEffectiveSeconds !== undefined ? { coalesceSeconds: job.coalesceEffectiveSeconds, ...(job.coalesceSeconds === null ? { coalesceIsDefault: true } : {}) } : {}),
+    ...(job.maxRunsPerHourEffective !== null && job.maxRunsPerHourEffective !== undefined ? { maxRunsPerHour: job.maxRunsPerHourEffective, ...(job.maxRunsPerHour === null ? { maxRunsPerHourIsDefault: true } : {}) } : {}),
     ...(job.pendingEvents ? { pendingEvents: job.pendingEvents } : {}),
     ...(job.target ? { target: job.target.sessionId ? `${job.target.kind} ${job.target.sessionId}` : job.target.kind } : {}),
     ...(job.agent?.model ? { model: job.agent.model } : {}),

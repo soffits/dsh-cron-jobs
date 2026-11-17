@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A job can have its own `maxRunsPerHour` (in `schedule_create` / `schedule_edit`, declared sets and config jobs): the cap on event-started runs in any hour, replacing the row's `events.maxRunsPerHour` for that job; `0` lifts it, `-1` on edit goes back to the row's value. Shown in the list and view as `maxRunsPerHour`.
+
 ## 0.19.0
 
 - `dsh-cron-apply --set <name> --release` lets go of a declared set: its members become ordinary stored jobs (same ids, history, schedules and pause state), nothing is deleted, and the tools edit them as any other job. `--dry-run` lists them first.

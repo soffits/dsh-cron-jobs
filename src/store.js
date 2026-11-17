@@ -40,6 +40,8 @@ export const storedJobSchema = z.object({
   once: z.boolean().optional(),
   // Seconds events gather before a run; the plugin's events.coalesceSeconds when omitted.
   coalesceSeconds: z.number().int().min(0).optional(),
+  // Most event runs of this job in any hour (0: no cap); the plugin's events.maxRunsPerHour when omitted.
+  maxRunsPerHour: z.number().int().min(0).optional(),
   // Directory of the command and of new sessions.
   cwd: z.string().optional(),
   preset: z.string().optional(),
