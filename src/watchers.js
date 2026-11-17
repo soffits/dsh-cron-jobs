@@ -81,7 +81,7 @@ export class WatcherSupervisor {
    * @param {(event: object) => void} options.emit - Receives each event.
    * @param {{ info: Function, warn: Function }} options.logger
    * @param {(entry: object) => Promise<void>} [options.record] - Run log.
-   * @param {(text: string, watcher: object) => Promise<void>} [options.notify] - Sends a down or back-up note.
+   * @param {(text: string, watcher: object, kind: 'watcher-down' | 'watcher-up') => Promise<void>} [options.notify] - Sends a down or back-up note.
    * @param {(id: string) => Promise<void>} [options.onDone] - A once watcher finished.
    * @param {string} [options.stateRoot] - Each watcher gets `<stateRoot>/<id>` as DSH_CRON_STATE_DIR.
    * @param {() => number} [options.now]
@@ -270,7 +270,7 @@ class Watcher {
     if (wasDown && this.alerted) {
       this.alerted = false
       sup.record({ time: new Date(sup.now()).toISOString(), job: null, event: 'watcher-up', watcher: def.id })
-      sup.notify(`✅ Watcher ${def.id} (${def.channel}) works again.`, def).catch(() => {})
+      sup.notify(`✅ Watcher ${def.id} (${def.channel}) works again.`, def, 'watcher-up').catch(() => {})
     }
   }
 
@@ -324,7 +324,7 @@ class Watcher {
     // The last run's, not this.stderr: a restarted run may be going already, with its own empty tail.
     const stderr = (exit?.stderrTail ?? '').slice(-300)
     sup.record({ time: new Date(sup.now()).toISOString(), job: null, event: 'watcher-down', watcher: def.id, downMs: sup.now() - this.downSince })
-    sup.notify(`⚠️ Watcher ${def.id} (${def.channel}) has been down for ${minutes} min (${this.restarts} restarts, last: ${how})${stderr ? `: ${stderr}` : ''}. Jobs on this channel only run on their schedule until it is back.`, def).catch(() => {})
+    sup.notify(`⚠️ Watcher ${def.id} (${def.channel}) has been down for ${minutes} min (${this.restarts} restarts, last: ${how})${stderr ? `: ${stderr}` : ''}. Jobs on this channel only run on their schedule until it is back.`, def, 'watcher-down').catch(() => {})
   }
 
   async stop() {
