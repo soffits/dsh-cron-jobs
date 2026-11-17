@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Ended jobs clean themselves up. A job made with the tools whose schedule has run out (a one-time `at`, a bounded RRULE, a `once` job that has fired) is removed, with its run history, `endedRetentionHours` after it ended. The new row setting defaults to 24; `0` keeps ended jobs until they are deleted by hand, as before, and fractions such as `0.5` work. The check runs every minute and at startup, so a job that expired while DSH was down is removed on the next start. Config jobs, paused jobs and active jobs are never removed, and neither is a job whose last run is still going or still waiting to deliver its result.
+- Jobs that ended under an older version have no saved end time; their retention starts when this version first sees them, so an upgrade does not clear them all at once.
+- Each removal is logged at info level (title and id) and, with `runLog` set, written as a `removed` line. `cron_job_list` and `cron_job_view` show `removesAt` for an ended job.
+- **Behaviour change:** with the default of 24 hours, ended jobs that used to stay listed for ever are now removed. Set `endedRetentionHours: 0` to keep the old behaviour.
+
 ## 0.15.1
 
 - On touch screens the filter tabs, buttons, menu items and the footer link are at least 40px tall.

@@ -1,6 +1,6 @@
 import { JobRunner, agentModel, agentSettings, isGated, jobKind } from './job.js'
 import { CronTimer, ScheduleError, ScheduleTimer, describeSchedule, parseSchedule, scheduleFromInput } from './schedule.js'
-import { JobStore } from './store.js'
+import { DEFAULT_ENDED_RETENTION_HOURS, JobStore } from './store.js'
 import { deliveryTarget, resolveDelivery } from './deliver.js'
 import { DEFAULT_COALESCE_SECONDS, DEFAULT_MAX_RUNS_PER_HOUR, Deduper, EventBatcher, EventInputError, checkPatterns, normalizeEvent, subscribed } from './events.js'
 import { WatcherInputError, WatcherSupervisor, checkWatcher } from './watchers.js'
@@ -16,6 +16,16 @@ export const RERUN_MAX_AGE_MS = 2 * 3600_000
 
 /** A cut-off run is not rerun when the job's next scheduled run is this close. */
 export const RERUN_MIN_LEAD_MS = 15 * 60_000
+
+/** How often ended jobs past their retention are looked for. */
+export const ENDED_SWEEP_MS = 60_000
+
+/**
+ * A run that still waits on a delivery, a turn, an archive or a rerun holds
+ * its ended job back from removal, but only while it is this young: after
+ * that the wait is stale and must not keep the job for ever.
+ */
+export const PENDING_WORK_MAX_AGE_MS = 24 * 3600_000
 
 /** Longest job title accepted from the tools. */
 export const MAX_TITLE_LENGTH = 200
@@ -78,6 +88,8 @@ export class CronJobs {
    * @param {typeof ScheduleTimer} [options.TimerClass] - Replaceable for tests.
    * @param {() => Date} [options.now]
    * @param {number} [options.watchdogMs] - How often the watchdog looks for lost timers; 0 turns it off.
+   * @param {number} [options.endedRetentionHours] - Hours an ended stored job is kept before it is removed with its run history; 0 keeps it.
+   * @param {number} [options.sweepMs] - How often ended jobs past their retention are looked for; 0 turns the sweep off.
    * @param {number} [options.overdueMs] - How far past its due time a tick must be before the watchdog runs it.
    * @param {{ coalesceSeconds?: number, maxRunsPerHour?: number }} [options.events] - Event batching (events.js).
    * @param {{ set: typeof setTimeout, clear: typeof clearTimeout }} [options.timers] - Event batch timers; replaceable for tests.
@@ -85,7 +97,7 @@ export class CronJobs {
    * @param {object} [options.watcherOptions] - Passed to {@link WatcherSupervisor} (stateRoot, limits, spawn).
    * @param {{ maxAgeMs?: number, minLeadMs?: number }} [options.rerun] - Limits for rerunning cut-off runs (see continueCut).
    */
-  constructor({ jobs, logger, run, wake, reuse, settle, send, answer, defaults = {}, signal, record, history, CronClass = CronTimer, TimerClass = ScheduleTimer, now = () => new Date(), watchdogMs = WATCHDOG_MS, overdueMs = OVERDUE_MS, events = {}, timers, watchers = [], watcherOptions = {}, rerun = {} }) {
+  constructor({ jobs, logger, run, wake, reuse, settle, send, answer, defaults = {}, signal, record, history, CronClass = CronTimer, TimerClass = ScheduleTimer, now = () => new Date(), watchdogMs = WATCHDOG_MS, overdueMs = OVERDUE_MS, endedRetentionHours = DEFAULT_ENDED_RETENTION_HOURS, sweepMs = ENDED_SWEEP_MS, events = {}, timers, watchers = [], watcherOptions = {}, rerun = {} }) {
     this.logger = logger
     this.defaults = defaults
     this.history = history
@@ -95,6 +107,9 @@ export class CronJobs {
     this.now = now
     this.watchdogMs = watchdogMs
     this.overdueMs = overdueMs
+    this.endedRetentionMs = Math.max(0, Number(endedRetentionHours) || 0) * 3600_000
+    this.sweepMs = sweepMs
+    this.sweeping = false
     this.record = record ?? (async () => {})
     this.deps = { run, wake, reuse, settle, send, answer, defaults, logger, signal, record, history, now, reportProblem: (problem, triggers) => this.reportProblem(problem, triggers) }
     this.eventSettings = {
@@ -224,6 +239,11 @@ export class CronJobs {
     if (this.watchdogMs > 0) {
       this.watchdog = setInterval(() => this.checkOverdue(), this.watchdogMs)
       this.watchdog.unref?.()
+    }
+    if (this.sweepMs > 0 && this.endedRetentionMs > 0 && this.store !== undefined) {
+      this.sweep = setInterval(() => this.track(this.sweepEnded(), 'ended sweep'), this.sweepMs)
+      this.sweep.unref?.()
+      this.track(this.sweepEnded(), 'ended sweep')
     }
     this.startWatchers()
     return this
@@ -439,7 +459,7 @@ export class CronJobs {
     const listens = current.on?.length > 0
     const ends = current.status === 'active' && (current.once === true || (next === null && !listens))
     const status = ends ? 'ended' : current.status
-    await this.saveRecord(entry, { ...current, status, scheduledAt: next?.toISOString() })
+    await this.saveRecord(entry, { ...current, status, scheduledAt: next?.toISOString(), ...(ends ? { endedAt: this.now().toISOString() } : {}) })
     if (status === 'ended') {
       entry.timer?.stop()
       entry.timer = undefined
@@ -538,6 +558,7 @@ export class CronJobs {
     if (this.stopped) return Promise.allSettled([...this.inflight])
     this.stopped = true
     clearInterval(this.watchdog)
+    clearInterval(this.sweep)
     for (const entry of this.entries.values()) {
       entry.timer?.stop()
       entry.batcher?.stop()
@@ -607,6 +628,7 @@ export class CronJobs {
       if (!paused && entry.timer && next === null && !(entry.record.on?.length > 0)) status = 'ended'
       await this.saveRecord(entry, {
         ...entry.record, status, updatedAt: this.now().toISOString(),
+        ...(status === 'ended' ? { endedAt: this.now().toISOString() } : {}),
         scheduledAt: entry.timer ? next?.toISOString() : entry.record.scheduledAt,
       })
       if (status === 'ended') {
@@ -724,7 +746,10 @@ export class CronJobs {
       }
     }
     // A new schedule or new subscriptions bring an ended job back.
-    if (next.status === 'ended' && (patch.schedule !== undefined || (patch.on !== undefined && next.on))) next.status = 'active'
+    if (next.status === 'ended' && (patch.schedule !== undefined || (patch.on !== undefined && next.on))) {
+      next.status = 'active'
+      delete next.endedAt
+    }
     requireWork(next)
     await this.saveRecord(entry, next)
     entry.job = fromStored(entry.record)
@@ -736,8 +761,12 @@ export class CronJobs {
     return this.view(entry)
   }
 
-  /** Delete a stored job and its run history. A run in progress finishes. */
-  async remove(id) {
+  /**
+   * Delete a stored job and its run history. A run in progress finishes.
+   * @param {string} id
+   * @param {string} [why] - Added to the log line, for removals the plugin makes itself.
+   */
+  async remove(id, why) {
     const entry = this.storedEntry(id)
     entry.timer?.stop()
     entry.timer = undefined
@@ -746,8 +775,51 @@ export class CronJobs {
     await this.store.delete(id)
     this.entries.delete(id)
     await this.history?.forget(id)
-    this.logger.info('[%s] deleted stored job %s', entry.job.name, id)
+    this.logger.info('[%s] deleted stored job %s%s', entry.job.name, id, why ? ` (${why})` : '')
     return { id, deleted: true }
+  }
+
+  /**
+   * Remove stored jobs that ended more than `endedRetentionHours` ago, with
+   * their run history (as deleting one does; the run log file keeps the
+   * record of what ran). Config jobs are never touched. A job that ended
+   * before it recorded when (an older version) gets its time stamped now, so
+   * an upgrade starts every such job's retention instead of removing them at
+   * once. A job whose run is still going, or still waits on a delivery, turn,
+   * archive or rerun, stays until that is done.
+   * @returns {Promise<string[]>} Ids of the removed jobs.
+   */
+  async sweepEnded() {
+    if (this.stopped || this.store === undefined || this.endedRetentionMs <= 0 || this.sweeping) return []
+    this.sweeping = true
+    const removed = []
+    try {
+      for (const entry of [...this.entries.values()]) {
+        if (this.stopped) break
+        const record = entry.record
+        if (record?.status !== 'ended') continue
+        const now = this.now().getTime()
+        const endedAt = Date.parse(record.endedAt ?? '')
+        if (Number.isNaN(endedAt)) {
+          await this.saveRecord(entry, { ...record, endedAt: new Date(now).toISOString() })
+          continue
+        }
+        if (now - endedAt < this.endedRetentionMs || this.awaitsWork(entry, now)) continue
+        await this.remove(entry.job.id, `ended ${record.endedAt}, kept ${this.endedRetentionMs / 3600_000} h`)
+        await this.record({ time: new Date(now).toISOString(), job: entry.job.name, event: 'removed', jobId: entry.job.id, reason: 'ended', endedAt: record.endedAt })
+        removed.push(entry.job.id)
+      }
+    } finally {
+      this.sweeping = false
+    }
+    return removed
+  }
+
+  /** Whether a job's run is going, or a recent run still waits for its delivery, turn, archive or rerun. */
+  awaitsWork(entry, now) {
+    if (entry.runner.running) return true
+    return this.history?.runs(entry.job.id).some(run => now - Date.parse(run.startedAt) < PENDING_WORK_MAX_AGE_MS
+      && (run.delivery?.status === 'pending' || run.turn?.status === 'pending' || run.archive === 'pending' || run.rerun?.status === 'pending')) ?? false
   }
 
   storedEntry(id) {
@@ -803,6 +875,7 @@ export class CronJobs {
       lastRun: this.history?.lastRun(job.id) ?? null,
       scheduled: timer !== undefined,
       ...(record ? { createdAt: record.createdAt, updatedAt: record.updatedAt, ...(record.createdBy ? { createdBy: record.createdBy } : {}) } : {}),
+      ...(state === 'ended' && record?.endedAt ? { endedAt: record.endedAt, ...(this.endedRetentionMs > 0 ? { removesAt: new Date(Date.parse(record.endedAt) + this.endedRetentionMs).toISOString() } : {}) } : {}),
     }
   }
 
