@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0
 
 - Declared sets: `dsh-cron-apply --set <name> --file <jobs.json>` makes a group of stored jobs match a list kept in a file, like `kubectl apply --prune`. New keys are created, changed fields are updated (and only those), members that left the list are removed, and nothing outside the set is touched. `--dry-run` prints the plan. An entry can `adopt` an existing tool-made job so its id and run history carry over. Members show `declared` in the list, view and page data. See "Declared sets" in the README.
 - Stored jobs can now carry `timeoutSeconds` and `preset` from a declared set; the tools are unchanged.
