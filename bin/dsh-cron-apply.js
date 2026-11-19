@@ -5,11 +5,8 @@
  * $DSH_HOME/cron-jobs/requests. See "Declared sets" in the README.
  */
 import { readFileSync } from 'node:fs'
-import { rm } from 'node:fs/promises'
-import { join } from 'node:path'
 import { parseArgs } from 'node:util'
-import { defaultRequestDir } from '../src/requests.js'
-import { enqueueEvent, waitForEventResult } from '../src/spool.js'
+import { sendRequest } from '../src/requests.js'
 
 const usage = `Usage: dsh-cron-apply --set <name> --file <path | -> [--dry-run] [--no-prune] [--timeout <seconds>]
        dsh-cron-apply --set <name> --release [--dry-run] [--timeout <seconds>]
@@ -77,23 +74,14 @@ function readJobs() {
   return jobs
 }
 
-const dir = defaultRequestDir()
 const dryRun = values['dry-run'] === true
 const request = values.release
   ? { type: 'release', set: values.set, dryRun }
   : { type: 'declared', set: values.set, jobs: readJobs(), dryRun, prune: values['no-prune'] !== true }
-const id = await enqueueEvent(request, { dir, wait: true })
 const seconds = Number(values.timeout ?? 30)
-const result = await waitForEventResult(id, { dir, timeoutMs: (Number.isFinite(seconds) && seconds > 0 ? seconds : 30) * 1000 })
-if (result === undefined) {
-  // Withdraw it, so a later DSH start never applies an old list.
-  let withdrawn = true
-  try {
-    await rm(join(dir, `${id}.json`))
-  } catch {
-    withdrawn = false
-  }
-  process.stderr.write(withdrawn
+const result = await sendRequest(request, { timeoutMs: (Number.isFinite(seconds) && seconds > 0 ? seconds : 30) * 1000 })
+if (result.timeout !== undefined) {
+  process.stderr.write(result.timeout === 'withdrawn'
     ? 'DSH did not take the request in time (is it running?); it was withdrawn and nothing changed.\n'
     : 'DSH took the request but did not answer in time; check the jobs before sending it again.\n')
   process.exit(3)
