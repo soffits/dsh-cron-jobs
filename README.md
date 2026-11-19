@@ -399,6 +399,14 @@ The Web GUI gets a **Cron tasks** entry in the sidebar, laid out like DSH's own 
 
 The page does not create or edit jobs: config jobs are edited in the config, the others through the tools.
 
+The same Run now works from a shell, for scripts and for re-running a job by hand so the run shows up in its history and run log:
+
+```sh
+dsh-cron-run job-1a2b3c4d   # a config job's id is its name
+```
+
+It goes through the request inbox under `$DSH_HOME/cron-jobs/requests` (like `dsh-cron-apply`), prints the job id and start time once the run has started, and does not wait for the run to end. Exit codes: 0 started, 1 refused (unknown job, or a run is already going), 2 bad arguments, 3 DSH did not take it within `--timeout` (default 30 s; the request is withdrawn, so it never runs later).
+
 ### Run history, pause state and stored jobs
 
 All three are kept in DSH's storage domain service under the domain `cron_jobs` (with the default JSON backend, `<DSH_HOME>/storages/cron_jobs.json`), so they survive restarts. The `jobs` table holds run history and pause state, one record per job (config jobs by name, other jobs by id); the `tasks` table holds the jobs created with the tools. A stored job looks like this:
