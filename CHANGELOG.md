@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.22.0
+
+- `dsh-cron-run <job id>` starts one run of a job now from a shell, the same as Run now on the page: refused while a run is going, recorded in the job's history and run log as a manual run, schedule untouched. It goes through the request inbox like `dsh-cron-apply` and withdraws a request DSH does not take in time.
+- `@deepseek-ai/schemastery` is a peer dependency, so updating the plugin never moves a private copy of it.
+
 ## 0.21.2
 
 - The tool descriptions, the row config and the README no longer advise keeping a slower schedule next to `on` as a safety net: a timer there hides a lost event and wakes the job twice. They say to add a schedule only when the clock is part of the work or the source cannot send events.
