@@ -42,6 +42,7 @@ test('MEDIA lines become files; empty text and [SILENT] send nothing', () => {
   assert.equal(messageFromText(undefined), undefined)
   assert.deepEqual(messageFromText('[SILENT]\nMEDIA:/tmp/a.png'), { text: '', files: ['/tmp/a.png'] })
   assert.deepEqual(messageFromText('Not [SILENT] at all'), { text: 'Not [SILENT] at all', files: [] })
+  assert.equal(messageFromText('Nothing new today. [SILENT]'), undefined, 'the marker after text is not sent as text')
 })
 
 test('a failed command reports its name, how it ended and the end of stderr after any stdout', () => {
@@ -74,13 +75,15 @@ test('the final answer is the last assistant text of the turn the prompt started
   assert.deepEqual(finalAnswer(turn('m1', [], 'error'), 'm1'), { done: true, text: '', reason: 'error' })
 })
 
-test('the final answer is the last text block when one message holds several', () => {
+test('the final answer is the last text block when one message holds several, and never narration', () => {
   const message = content => ({ type: 'assistant/message', data: { message: { role: 'assistant', content } } })
   const log = [
     { type: 'user/message', data: { id: 'm1', role: 'user', content: [] } },
+    // A provider that runs its own tool loop: each call is announced in a message of its own,
+    // and its texts all land in the step's one message.
+    message([{ type: 'tool-call', id: 'c1', name: 'Bash', arguments: '{}' }]),
     message([
       { type: 'text', text: 'Checking the mailbox first.' },
-      { type: 'tool-call', id: 'c1', name: 'Bash', arguments: '{}' },
       { type: 'text', text: 'Nothing new.' },
       { type: 'text', text: '[SILENT]\n' },
       { type: 'text', text: '  ' },
@@ -90,6 +93,8 @@ test('the final answer is the last text block when one message holds several', (
   const answer = finalAnswer(log, 'm1')
   assert.deepEqual(answer, { done: true, text: '[SILENT]', reason: 'completed' })
   assert.equal(messageFromText(answer.text), undefined)
+  const stopped = [log[0], message([{ type: 'text', text: 'Now the inbox.' }, { type: 'tool-call', id: 'c2', name: 'Bash', arguments: '{}' }]), { type: 'turn/end', data: { turn: 1, reason: { kind: 'max_tokens' } } }]
+  assert.deepEqual(finalAnswer(stopped, 'm1'), { done: true, text: '', reason: 'max_tokens' })
 })
 
 test('sendMessage calls send({ to, text, files, from }) on the named service', async () => {
@@ -307,7 +312,7 @@ test('waitForAnswer waits for a sessionController that registers late, and gives
 test('the agent prompt says where its answer goes only when it is delivered', () => {
   const base = { jobName: 'J', prompt: 'p', firedAt: '2026-11-08 07:00' }
   assert.doesNotMatch(buildAgentPrompt(base), /delivered/)
-  assert.match(buildAgentPrompt({ ...base, delivery: NOTIFY }), /delivered to notify through chat; MEDIA:<path> lines .* exactly \[SILENT\] sends nothing/)
+  assert.match(buildAgentPrompt({ ...base, delivery: NOTIFY }), /delivered to notify through chat; MEDIA:<path> lines .* ending in \[SILENT\] sends no text/)
 })
 
 test('the tools set, show and reset a job\'s delivery target', async () => {

@@ -64,7 +64,7 @@ function header({ jobName, jobId, when }) {
 
 function deliveryNote(delivery) {
   if (delivery === undefined) return ''
-  return ` Your final answer is delivered ${delivery.to ? `to ${delivery.to} ` : ''}through ${delivery.via}; MEDIA:<path> lines in it are attached as files, and an answer of exactly [SILENT] sends nothing.`
+  return ` Your final answer is delivered ${delivery.to ? `to ${delivery.to} ` : ''}through ${delivery.via}; MEDIA:<path> lines in it are attached as files, and an answer ending in [SILENT] sends no text.`
 }
 
 /**
