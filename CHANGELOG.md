@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.22.1
 
 - A job's answer that ends in `[SILENT]` after some text ("Nothing new today. [SILENT]") sends no text; it used to be delivered with the marker in it. The answer and the silent marker now follow the rule of the Telegram and Matrix bridges (`@soffits/dsh-channel-core`), so the text a model wrote between tool calls is never delivered as a job's answer either.
 
