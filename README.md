@@ -162,7 +162,7 @@ Only sessions the plugin opened for that job are candidates. If the previous ses
 
 A job with a delivery target sends its result when a run is over:
 
-- **Agent and gated jobs**: when the woken session's turn ends, its final answer (the text of the last assistant message of the turn the prompt started) is sent. An empty answer, or exactly `[SILENT]`, sends nothing, so a check that found nothing stays quiet. The prompt tells the agent this in one line, so job prompts don't have to.
+- **Agent and gated jobs**: when the woken session's turn ends, its final answer (the last text of the last assistant message of the turn the prompt started, when that message called no tool) is sent. An empty answer, or one ending in `[SILENT]`, sends no text, so a check that found nothing stays quiet. The prompt tells the agent this in one line, so job prompts don't have to.
 - **Command jobs**: non-empty stdout is sent. If the command fails (non-zero exit, timeout, killed, or could not start), a short note is sent instead, after any stdout: `⚠️ <job> failed (exit <code>)` (or `timed out after <n>s`, ...) followed by the last 15 lines of stderr.
 - **Gated jobs** whose command fails send the same failure note, and a wake that fails sends `⚠️ <job>: could not wake the agent: <reason>`. A gate that decides not to wake sends nothing.
 - Lines of the form `MEDIA:<path>` in the result are taken out of the text and sent as files. Relative paths are read from the job's directory (the session directory for agent answers), and `~` is the home directory.

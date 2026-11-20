@@ -1,5 +1,6 @@
 import { homedir } from 'node:os'
 import { isAbsolute, resolve } from 'node:path'
+import { cutSilent, messageAnswer } from '@soffits/dsh-channel-core'
 
 /**
  * Result delivery: after a run, a job's result can be handed to another
@@ -12,9 +13,6 @@ import { isAbsolute, resolve } from 'node:path'
  * At delivery time the service is looked up by name and its `send` method is
  * called with `{ to, text, files, from }` (see README, "Delivery channels").
  */
-
-/** Answer that means "nothing to send". */
-export const SILENT = '[SILENT]'
 
 /** Delivery attempts per result: the first try and two retries. */
 export const DELIVERY_ATTEMPTS = 3
@@ -77,8 +75,8 @@ export function describeTarget(target) {
 /**
  * Turn a result text into a message: `MEDIA:<path>` lines become files
  * (relative paths and `~` resolved against `cwd` and the home directory),
- * the rest is the text. Empty text, or exactly `[SILENT]`, with no files is
- * nothing to send.
+ * the rest is the text. Text ending in `[SILENT]` (the chat bridges' silent
+ * marker) is dropped, and with no files that is nothing to send.
  * @param {string | undefined} raw
  * @param {string} [cwd]
  * @returns {{ text: string, files: string[] } | undefined}
@@ -92,8 +90,8 @@ export function messageFromText(raw, cwd) {
     if (media) files.push(mediaPath(media[1], cwd))
     else kept.push(line)
   }
-  let text = kept.join('\n').trim()
-  if (text === SILENT) text = ''
+  const { text: answer, silent } = cutSilent(kept.join('\n'))
+  const text = silent ? '' : answer
   if (text === '' && files.length === 0) return undefined
   return { text, files }
 }
@@ -128,12 +126,10 @@ export function failureLine(job, result) {
 }
 
 /**
- * The final answer of the turn that a given message started: the last text
- * block of the last assistant message between that `user/message` event and
- * the next `turn/end`. Only the last block counts because some providers
- * (Claude Code through dsh-oh-my-claude) put every text block of their own
- * inner tool loop into one assistant message, so narration would otherwise
- * be glued in front of a final `[SILENT]`. `done` is false while the turn is
+ * The final answer of the turn that a given message started: the answer of
+ * the last assistant message between that `user/message` event and the next
+ * `turn/end`, by the chat bridges' rule (`messageAnswer`: the last text block
+ * of a message that called no tool, so narration is never delivered). `done` is false while the turn is
  * still open, or the message has not entered a turn yet. `cause` says why an
  * aborted turn stopped (`user`, `parent`, `disposed`, `hook`).
  * @param {Array<{ type: string, data?: any }>} log - The session's event log.
@@ -147,10 +143,7 @@ export function finalAnswer(log, messageId) {
   for (let i = start + 1; i < log.length; i++) {
     const event = log[i]
     if (event.type === 'assistant/message') {
-      const parts = event.data?.message?.content ?? []
-      const texts = parts.filter(part => part?.type === 'text' && typeof part.text === 'string')
-        .map(part => part.text.trim()).filter(Boolean)
-      text = texts.at(-1) ?? ''
+      text = messageAnswer(event.data?.message)
     } else if (event.type === 'turn/end') {
       // dsh-fallback-models stops a turn whose model failed and continues the
       // work in the next turn on a fallback model; the answer is there.

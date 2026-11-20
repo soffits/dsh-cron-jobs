@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.22.1
+
+- A job's answer that ends in `[SILENT]` after some text ("Nothing new today. [SILENT]") sends no text; it used to be delivered with the marker in it. The answer and the silent marker now follow the rule of the Telegram and Matrix bridges (`@soffits/dsh-channel-core`), so the text a model wrote between tool calls is never delivered as a job's answer either.
+
 ## 0.22.0
 
 - `dsh-cron-run <job id>` starts one run of a job now from a shell, the same as Run now on the page: refused while a run is going, recorded in the job's history and run log as a manual run, schedule untouched. It goes through the request inbox like `dsh-cron-apply` and withdraws a request DSH does not take in time.

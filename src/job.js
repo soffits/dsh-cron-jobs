@@ -370,7 +370,7 @@ export class JobRunner {
   /**
    * Wait in the background for the turn a woken prompt started, then save
    * how it ended and deliver its final answer when the run has a pending
-   * delivery. An empty answer or exactly [SILENT] sends nothing. A turn DSH
+   * delivery. An empty answer or one ending in [SILENT] sends no text. A turn DSH
    * cut off (a restart or reload disposed it) delivers nothing and is marked
    * for one rerun (see markCutOff). Left pending when the plugin unloads:
    * the turn may still be running, and the next copy watches it again.
