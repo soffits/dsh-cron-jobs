@@ -280,7 +280,7 @@ export async function waitForAnswer(ctx, sessionId, messageId, {
     await agent.whenIdle().catch(() => {})
     if (signal?.aborted) return { pending: true }
     const answer = finalAnswer(agent.session?.log ?? [], messageId)
-    if (answer.done) return { text: answer.text ?? '', reason: answer.reason, ...(answer.cause ? { cause: answer.cause } : {}) }
+    if (answer.done) return { text: answer.text ?? '', reason: answer.reason, ...(answer.cause ? { cause: answer.cause } : {}), ...(answer.failure ? { failure: answer.failure } : {}) }
     if (attempt >= attempts) return { error: 'the prompt never reached a finished turn' }
     await sleep(retryMs, signal)
     if (signal?.aborted) return { pending: true }

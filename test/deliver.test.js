@@ -233,7 +233,7 @@ test('a woken agent\'s final answer is delivered once its turn ends, naming the 
   assert.equal(records.at(-1).event, 'delivery')
 })
 
-test('an empty or [SILENT] answer sends nothing; a missing answer is recorded as failed', async () => {
+test('an empty or [SILENT] answer sends nothing; a missing answer is a failed turn, reported as a problem note', async () => {
   for (const text of ['', '[SILENT]']) {
     const { runner, sent, run } = deliverySetup({ name: 'Dream', agent: { prompt: 'p' } }, { answer: async () => ({ text, reason: 'completed' }) })
     await runner.tick()
@@ -244,8 +244,8 @@ test('an empty or [SILENT] answer sends nothing; a missing answer is recorded as
   const lost = deliverySetup({ name: 'Dream', agent: { prompt: 'p' } }, { answer: async () => ({ error: 'session not found: gone' }) })
   await lost.runner.tick()
   await drain(lost.runner)
-  assert.equal(lost.run().delivery.status, 'failed')
-  assert.equal(lost.run().delivery.error, 'session not found: gone')
+  assert.equal(lost.run().delivery.status, 'sent')
+  assert.match(lost.sent[0].message.text, /Dream: its turn in session .* failed: the answer could not be read: session not found: gone/)
 })
 
 test('jobs that post into an existing session, or turn delivery off, deliver nothing', async () => {

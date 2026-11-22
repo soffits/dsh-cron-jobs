@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { CronJobs } from '../src/controller.js'
 import { HistoryStore, memoryTable } from '../src/history.js'
+import { finalAnswer } from '../src/deliver.js'
 
 const quiet = { info() {}, warn() {}, error() {} }
 const NOW = new Date('2026-11-14T03:00:00.000Z')
@@ -9,7 +10,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
 const OWNER = { via: 'notify', to: 'owner' }
 const OPS = { via: 'notify', to: 'ops' }
 
-function setup({ problems, failWake = () => false } = {}) {
+function setup({ problems, failWake = () => false, answer } = {}) {
   const wakes = []
   const sent = []
   const history = new HistoryStore({ table: memoryTable(), logger: quiet })
@@ -30,6 +31,7 @@ function setup({ problems, failWake = () => false } = {}) {
       if (failWake(request)) throw new Error('this host cannot create sessions (no sessionController service)')
       return `session-${wakes.length}`
     },
+    ...(answer ? { answer: async (sessionId) => answer(sessionId) } : {}),
     send: async (target, message) => { sent.push({ to: target.to, text: message.text }); return { status: 'sent', attempts: 1 } },
   }).start()
   return { controller, wakes, sent, history }
@@ -130,3 +132,81 @@ test('watcher notes follow the same rule', async () => {
   assert.equal(sent.length, 1)
   assert.match(wakes[0].text, /"kind":"watcher-up"/)
 })
+
+const ERRORED = { text: '', reason: 'error', failure: { message: 'Your account can\'t receive replies from Claude right now', code: 'PROVIDER' } }
+const agentJob = { ...base, title: 'Plan review', prompt: 'Review the plan.' }
+// The handler's own turn (session-2) ends normally.
+const onlyFirst = failed => sessionId => sessionId === 'session-1' ? failed : { text: 'ok', reason: 'completed' }
+const settle = async () => { await tick(); await tick(); await tick() }
+
+test('a finished turn that ended in an error carries the provider failure', () => {
+  const log = [
+    { type: 'user/message', data: { id: 'm1' } },
+    { type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { message: 'no replies', code: 'PROVIDER' } } } },
+  ]
+  assert.deepEqual(finalAnswer(log, 'm1'), { done: true, text: '', reason: 'error', failure: { message: 'no replies', code: 'PROVIDER' } })
+})
+
+test('a woken turn that ends in an error is handed to the problems channel with the error text', async () => {
+  const { controller, wakes, sent, history } = setup({ problems: { channel: 'cron.problem', deliver: false }, answer: onlyFirst(ERRORED) })
+  const fixer = await controller.create(handler)
+  const job = await controller.create(agentJob)
+  controller.runNow(job.id)
+  await settle()
+  assert.deepEqual(sent, [{ to: 'owner', text: 'ok' }], 'only the handler\'s own report, no raw note')
+  assert.equal(wakes.length, 2)
+  assert.equal(wakes[1].principal.id, fixer.id)
+  assert.match(wakes[1].text, /"kind":"turn-failed"/)
+  assert.match(wakes[1].text, /"job":"Plan review"/)
+  assert.match(wakes[1].text, /"sessionId":"session-1"/)
+  assert.match(wakes[1].text, /can't receive replies from Claude right now/)
+  assert.equal(history.runs(job.id)[0].delivery.status, 'silent')
+})
+
+test('without a problems setting, a failed turn is sent to the job\'s target instead of staying silent', async () => {
+  const { controller, sent, history } = setup({ answer: onlyFirst(ERRORED) })
+  const job = await controller.create(agentJob)
+  controller.runNow(job.id)
+  await settle()
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].to, 'owner')
+  assert.match(sent[0].text, /^⚠️ Plan review: its turn in session session-1 failed: the turn ended in an error: .*can't receive replies/)
+  assert.equal(history.runs(job.id)[0].delivery.status, 'sent')
+})
+
+test('an answer that cannot be read is a failed turn too', async () => {
+  const { controller, wakes, sent } = setup({ problems: { channel: 'cron.problem', deliver: false }, answer: onlyFirst({ error: 'session not found: gone' }) })
+  await controller.create(handler)
+  const job = await controller.create(agentJob)
+  controller.runNow(job.id)
+  await settle()
+  assert.deepEqual(sent, [{ to: 'owner', text: 'ok' }])
+  assert.match(wakes[1].text, /"kind":"turn-failed"/)
+  assert.match(wakes[1].text, /the answer could not be read: session not found: gone/)
+})
+
+test('a failed turn of a job that delivers nowhere still reaches the problems channel', async () => {
+  const { controller, wakes } = setup({ problems: { channel: 'cron.problem', deliver: false }, answer: onlyFirst(ERRORED) })
+  await controller.create(handler)
+  const job = await controller.create({ ...agentJob, deliver: false })
+  controller.runNow(job.id)
+  await settle()
+  assert.equal(wakes.length, 2)
+  assert.match(wakes[1].text, /"kind":"turn-failed"/)
+})
+
+for (const [name, answer] of [
+  ['a normal completion', { text: 'Report', reason: 'completed' }],
+  ['a [SILENT] answer', { text: 'Nothing new. [SILENT]', reason: 'completed' }],
+  ['a turn a person stopped', { text: 'Half', reason: 'aborted', cause: 'user' }],
+  ['a turn DSH cut off', { text: 'Half', reason: 'aborted', cause: 'disposed' }],
+]) {
+  test(`${name} raises no problem note`, async () => {
+    const { controller, wakes } = setup({ problems: { channel: 'cron.problem' }, answer: () => answer })
+    await controller.create(handler)
+    const job = await controller.create(agentJob)
+    controller.runNow(job.id)
+    await settle()
+    assert.equal(wakes.length, 1)
+  })
+}

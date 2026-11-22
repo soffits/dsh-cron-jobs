@@ -134,7 +134,8 @@ export function failureLine(job, result) {
  * aborted turn stopped (`user`, `parent`, `disposed`, `hook`).
  * @param {Array<{ type: string, data?: any }>} log - The session's event log.
  * @param {string} messageId - Id of the prompt the job sent.
- * @returns {{ done: boolean, text?: string, reason?: string, cause?: string }}
+ * `failure` carries the provider's `{ message, code }` when the turn ended in an error.
+ * @returns {{ done: boolean, text?: string, reason?: string, cause?: string, failure?: { message?: string, code?: string } }}
  */
 export function finalAnswer(log, messageId) {
   const start = log.findIndex(event => event.type === 'user/message' && event.data?.id === messageId)
@@ -149,7 +150,8 @@ export function finalAnswer(log, messageId) {
       // work in the next turn on a fallback model; the answer is there.
       if (continuedElsewhere(event.data?.reason)) continue
       const cause = event.data?.reason?.reason?.kind
-      return { done: true, text, reason: event.data?.reason?.kind, ...(typeof cause === 'string' ? { cause } : {}) }
+      const failure = event.data?.reason?.kind === 'error' ? event.data.reason.error : undefined
+      return { done: true, text, reason: event.data?.reason?.kind, ...(typeof cause === 'string' ? { cause } : {}), ...(failure ? { failure } : {}) }
     }
   }
   return { done: false }
@@ -163,6 +165,19 @@ export function finalAnswer(log, messageId) {
  */
 export function cutOff(answer) {
   return answer.reason === 'aborted' && answer.cause === 'disposed'
+}
+
+/**
+ * Why a woken turn failed, or undefined when it did not: it ended in an error,
+ * or its answer could not be read. A turn someone stopped, one DSH cut off (it
+ * runs again, see cutOff) and a normal end are not failures.
+ * @param {{ error?: string, reason?: string, failure?: { message?: string, code?: string } }} answer
+ */
+export function turnFailure(answer) {
+  if ('error' in answer) return `the answer could not be read: ${answer.error}`
+  if (answer.reason !== 'error') return undefined
+  const { message, code } = answer.failure ?? {}
+  return `the turn ended in an error: ${[message, code && `(${code})`].filter(Boolean).join(' ') || 'no detail'}`
 }
 
 /** Prefix of the stop reason dsh-fallback-models records on a turn it continues. */
