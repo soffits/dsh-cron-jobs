@@ -267,7 +267,7 @@ In the tools and in declared sets the same target is `command:my-notify --from-j
 ## Schedules
 
 - **cron**: a cron expression, read in the job's time zone.
-- **rrule**: one `DTSTART` line and one `RRULE` line, for example `DTSTART;TZID=America/Toronto:20261109T100000` and `RRULE:FREQ=DAILY;INTERVAL=3;UNTIL=20261215T150000Z` (every three days at 10:00 Toronto time until mid-December). A `TZID` rule keeps local clock time across daylight-saving changes. `RRULE:FREQ=DAILY;COUNT=1` runs once. A `DTSTART` in the past is fine; runs start with the first occurrence after the job is armed. Rules are evaluated by DSH's own bounded RRULE engine ([`@deepseek-ai/dsh-util-time`](https://www.npmjs.com/package/@deepseek-ai/dsh-util-time), built on [rrule](https://github.com/jkbrzt/rrule)), the same one the built-in Schedule uses, so a rule behaves the same in both, with the same limits (no `SECONDLY`, `COUNT` at most 1000, and so on).
+- **rrule**: one `DTSTART` line and one `RRULE` line, for example `DTSTART;TZID=America/New_York:20261109T100000` and `RRULE:FREQ=DAILY;INTERVAL=3;UNTIL=20261215T150000Z` (every three days at 10:00 New York time until mid-December). A `TZID` rule keeps local clock time across daylight-saving changes. `RRULE:FREQ=DAILY;COUNT=1` runs once. A `DTSTART` in the past is fine; runs start with the first occurrence after the job is armed. Rules are evaluated by DSH's own bounded RRULE engine ([`@deepseek-ai/dsh-util-time`](https://www.npmjs.com/package/@deepseek-ai/dsh-util-time), built on [rrule](https://github.com/jkbrzt/rrule)), the same one the built-in Schedule uses, so a rule behaves the same in both, with the same limits (no `SECONDLY`, `COUNT` at most 1000, and so on).
 - **at**: one run at a fixed time.
 
 When an RRULE or one-time schedule has no more runs (or a `once` job has run), the job's state becomes **ended**. Config jobs stay listed until they are removed from the config. A job made with the tools is removed automatically `endedRetentionHours` (default 24) after it ended, together with its run history, the same as deleting it; set the option to `0` to keep ended jobs until you delete them. Only jobs in the **ended** state are removed: paused and active jobs stay, and so does a job whose last run is still going or still waiting to deliver its result. The time is checked once a minute, and again when the scheduler starts, so a job that expired while DSH was down goes right away. Jobs that ended under an older version, with no end time saved, start their retention when this version first sees them. Giving an ended job a new schedule brings it back. `cron_job_list` and `cron_job_view` show `removesAt` for an ended job, and each removal is logged at info level with the job's title and id. To keep a record of one-shot jobs after they are gone, set `runLog`: the file gets a `removed` line next to the job's `start` and `end` lines.
@@ -418,7 +418,7 @@ All three are kept in DSH's storage domain service under the domain `cron_jobs` 
   "id": "job-1a2b3c4d",
   "title": "Check the parcel",
   "prompt": "Has the parcel arrived? Tell me either way.",
-  "schedule": { "kind": "rrule", "rrule": "DTSTART;TZID=America/Toronto:20261109T100000\nRRULE:FREQ=DAILY;COUNT=1" },
+  "schedule": { "kind": "rrule", "rrule": "DTSTART;TZID=America/New_York:20261109T100000\nRRULE:FREQ=DAILY;COUNT=1" },
   "cwd": "/home/me",
   "preset": "default",
   "target": { "kind": "session", "sessionId": "session-0123" },

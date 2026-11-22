@@ -139,7 +139,7 @@ function parseAt(text, zone) {
 function canonicalZone(value) {
   const result = canonicalizeTimeZone(value)
   if (result.kind === 'rejected') {
-    throw new ScheduleError('invalid_time_zone', `timeZone: ${JSON.stringify(value)} is not an IANA zone such as America/Toronto (UTC is "UTC")`)
+    throw new ScheduleError('invalid_time_zone', `timeZone: ${JSON.stringify(value)} is not an IANA zone such as America/New_York (UTC is "UTC")`)
   }
   return result.timeZone
 }

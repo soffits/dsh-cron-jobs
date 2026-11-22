@@ -55,7 +55,7 @@ function setup({ jobs = [], history = new HistoryStore({ table: memoryTable(), l
 const reminder = {
   title: 'Check the parcel',
   prompt: 'Has the parcel arrived?',
-  schedule: { at: '2026-11-09T09:00', timeZone: 'America/Toronto' },
+  schedule: { at: '2026-11-09T09:00', timeZone: 'America/New_York' },
   cwd: '/home/me',
   preset: 'helper',
   target: { kind: 'session', sessionId: 'session-chat' },
@@ -77,7 +77,7 @@ test('create stores an agent-only job with its schedule, directory, preset and t
   assert.equal(job.createdBy, 'session-chat')
   const stored = history.tasks.get(job.id)
   assert.equal(stored.scheduledAt, '2026-11-09T14:00:00.000Z')
-  assert.deepEqual(stored.schedule, { kind: 'at', at: '2026-11-09T14:00:00.000Z', timeZone: 'America/Toronto' })
+  assert.deepEqual(stored.schedule, { kind: 'at', at: '2026-11-09T14:00:00.000Z', timeZone: 'America/New_York' })
   assert.equal(timers.length, 1)
 })
 
@@ -119,7 +119,7 @@ test('an agent-only job delivers its prompt to its session and ends after a one-
 test('a new_once job opens one session and keeps sending to it', async () => {
   const { controller, timers, wakes, deliveries, history } = setup()
   const job = await controller.create({
-    ...reminder, target: { kind: 'new_once' }, schedule: { cron: '0 9 * * *', timeZone: 'America/Toronto' },
+    ...reminder, target: { kind: 'new_once' }, schedule: { cron: '0 9 * * *', timeZone: 'America/New_York' },
   })
   timers[0].fire()
   await settle()
@@ -140,7 +140,7 @@ test('a gated stored job runs its command and appends the output', async () => {
   const { controller, timers, runs, wakes } = setup()
   await controller.create({
     title: 'Mail', prompt: 'Sort the new mail.', command: './new-mail', cwd: '/w',
-    schedule: { rrule: 'DTSTART;TZID=America/Toronto:20261109T100000\nRRULE:FREQ=DAILY;INTERVAL=3' },
+    schedule: { rrule: 'DTSTART;TZID=America/New_York:20261109T100000\nRRULE:FREQ=DAILY;INTERVAL=3' },
     target: { kind: 'new' },
   })
   timers[0].fire()
@@ -155,7 +155,7 @@ test('a gated stored job runs its command and appends the output', async () => {
 test('a run missed while DSH was down happens once at startup', async () => {
   const history = new HistoryStore({ table: memoryTable(), logger: quiet })
   const first = setup({ history })
-  const job = await first.controller.create({ ...reminder, schedule: { cron: '0 9 * * *', timeZone: 'America/Toronto' } })
+  const job = await first.controller.create({ ...reminder, schedule: { cron: '0 9 * * *', timeZone: 'America/New_York' } })
   await first.controller.stop()
   // Restart two days later: the saved next run is in the past.
   const later = new Date('2026-11-10T20:00:00.000Z')
@@ -170,7 +170,7 @@ test('a run missed while DSH was down happens once at startup', async () => {
 
 test('pause, resume, update and delete a stored job; config jobs are read-only', async () => {
   const { controller, timers, history } = setup({ jobs: [{ name: 'cfg', cron: '* * * * *', command: 'true' }] })
-  const job = await controller.create({ ...reminder, schedule: { cron: '0 9 * * *', timeZone: 'America/Toronto' } })
+  const job = await controller.create({ ...reminder, schedule: { cron: '0 9 * * *', timeZone: 'America/New_York' } })
   const paused = await controller.setPaused(job.id, true)
   assert.equal(paused.job.state, 'paused')
   assert.equal(history.tasks.get(job.id).status, 'paused')
@@ -214,8 +214,8 @@ test('an ended job comes back with a new schedule; pausing it is refused', async
 test('config jobs take rrule, at and agent-only forms and a target session', async () => {
   const { controller, timers, runs, deliveries } = setup({
     jobs: [
-      { name: 'weekly', rrule: 'DTSTART;TZID=America/Toronto:20261109T110000\nRRULE:FREQ=WEEKLY;BYDAY=MO', agent: { prompt: 'Weekly look.', sessionId: 'session-main' } },
-      { name: 'once', at: '2026-11-20T09:00', timeZone: 'America/Toronto', command: 'true' },
+      { name: 'weekly', rrule: 'DTSTART;TZID=America/New_York:20261109T110000\nRRULE:FREQ=WEEKLY;BYDAY=MO', agent: { prompt: 'Weekly look.', sessionId: 'session-main' } },
+      { name: 'once', at: '2026-11-20T09:00', timeZone: 'America/New_York', command: 'true' },
       { name: 'both', cron: '* * * * *', at: '2026-11-20T09:00:00Z', command: 'true' },
       { name: 'empty', cron: '* * * * *' },
     ],
@@ -223,7 +223,7 @@ test('config jobs take rrule, at and agent-only forms and a target session', asy
   const [weekly, once, both, empty] = controller.list()
   assert.deepEqual([weekly.kind, weekly.state, weekly.source], ['agent', 'active', 'config'])
   assert.equal(weekly.nextRunAt, '2026-11-09T16:00:00.000Z')
-  assert.equal(weekly.timeZone, 'America/Toronto')
+  assert.equal(weekly.timeZone, 'America/New_York')
   assert.deepEqual(weekly.target, { kind: 'session', sessionId: 'session-main' })
   assert.equal(once.nextRunAt, '2026-11-20T14:00:00.000Z')
   assert.equal(both.state, 'invalid')
@@ -254,7 +254,7 @@ test('the page can delete stored jobs but not config jobs, by id', async () => {
 test('a stored job opens its sessions on its model; editing changes it and null clears it', async () => {
   const { controller, timers, wakes, history } = setup()
   const model = { provider: 'anthropic', model: 'claude-sonnet-4-5', reasoningEffort: 'high' }
-  const job = await controller.create({ ...reminder, target: { kind: 'new' }, schedule: { cron: '0 9 * * *', timeZone: 'America/Toronto' }, model: { ...model, model: ' claude-sonnet-4-5 ' } })
+  const job = await controller.create({ ...reminder, target: { kind: 'new' }, schedule: { cron: '0 9 * * *', timeZone: 'America/New_York' }, model: { ...model, model: ' claude-sonnet-4-5 ' } })
   assert.deepEqual(job.agent.model, model)
   assert.deepEqual(history.tasks.get(job.id).model, model)
   timers[0].fire()
