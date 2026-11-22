@@ -119,7 +119,7 @@ test('editing: on can replace the schedule, an empty cron removes it, and a job 
   const { controller } = setup()
   const job = await controller.create({ ...base, title: 'Mail', prompt: 'Read.', schedule: { cron: '*/15 * * * *', timeZone: 'UTC' } })
   await assert.rejects(controller.update(job.id, { schedule: { cron: '' } }), (error) => error instanceof JobInputError && /schedule, on/.test(error.message))
-  let view = await controller.update(job.id, { on: ['mail.inbox'], schedule: { cron: '0 */2 * * *', timeZone: 'America/Toronto' } })
+  let view = await controller.update(job.id, { on: ['mail.inbox'], schedule: { cron: '0 */2 * * *', timeZone: 'America/New_York' } })
   assert.equal(view.schedule.expression, '0 */2 * * *')
   assert.deepEqual(view.on, ['mail.inbox'])
   view = await controller.update(job.id, { schedule: { cron: '' } })

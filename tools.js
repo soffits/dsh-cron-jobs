@@ -23,7 +23,7 @@ export const Config = z.object({
 export const VIEW_RUNS = 5
 export const VIEW_TAIL_CHARS = 300
 
-const RRULE_HELP = 'RFC 5545 schedule: one DTSTART line, a newline, and one RRULE line. DTSTART ends in Z for UTC or carries TZID with an IANA zone, and local clock time is kept across daylight-saving changes. A DTSTART in the past is fine: runs start with the first occurrence after now. COUNT is at most 1000; use UNTIL (a UTC instant ending in Z) for longer rules. MINUTELY and HOURLY take no BY parts, so pick clock times with DAILY or WEEKLY plus BYHOUR and BYMINUTE. Example: "DTSTART;TZID=America/Toronto:20261109T100000\\nRRULE:FREQ=DAILY;INTERVAL=3;UNTIL=20261215T150000Z".'
+const RRULE_HELP = 'RFC 5545 schedule: one DTSTART line, a newline, and one RRULE line. DTSTART ends in Z for UTC or carries TZID with an IANA zone, and local clock time is kept across daylight-saving changes. A DTSTART in the past is fine: runs start with the first occurrence after now. COUNT is at most 1000; use UNTIL (a UTC instant ending in Z) for longer rules. MINUTELY and HOURLY take no BY parts, so pick clock times with DAILY or WEEKLY plus BYHOUR and BYMINUTE. Example: "DTSTART;TZID=America/New_York:20261109T100000\\nRRULE:FREQ=DAILY;INTERVAL=3;UNTIL=20261215T150000Z".'
 
 /**
  * @param {string} prefix
@@ -85,7 +85,7 @@ export function toolSchemas(prefix) {
       title: { type: 'string', description: 'Job name in the user\'s language, at most 200 characters: action plus object, without timing or status.' },
       ...fields,
       ...schedule,
-      timeZone: { type: 'string', description: 'IANA zone such as America/Toronto. Required with cron and with an at without offset; rrule takes its zone from DTSTART.' },
+      timeZone: { type: 'string', description: 'IANA zone such as America/New_York. Required with cron and with an at without offset; rrule takes its zone from DTSTART.' },
       model,
     }, ['title']),
     watch: object({

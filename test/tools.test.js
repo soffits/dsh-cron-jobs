@@ -54,17 +54,17 @@ test('the five tools have the configured prefix and object schemas', () => {
 
 test('create takes the caller\'s directory, preset and session for "remind me here"', async () => {
   const { call, controller } = setup()
-  const job = await call('create', { title: 'Parcel', prompt: 'Did it come?', at: '2026-11-09T09:00', timeZone: 'America/Toronto', target: 'this_session' })
+  const job = await call('create', { title: 'Parcel', prompt: 'Did it come?', at: '2026-11-09T09:00', timeZone: 'America/New_York', target: 'this_session' })
   assert.equal(job.state, 'active')
   assert.equal(job.target, 'session session-chat')
   assert.equal(job.preset, 'helper')
   assert.equal(job.sessionCwd, '/home/me/work')
   assert.equal(job.nextRunAt, '2026-11-09T14:00:00.000Z')
-  assert.equal(job.nextRunAtLocal, '2026-11-09 09:00 America/Toronto')
+  assert.equal(job.nextRunAtLocal, '2026-11-09 09:00 America/New_York')
   assert.equal(job.createdBy, 'session-chat')
   assert.equal(controller.get(job.id).cwd, '/home/me/work')
 
-  const fresh = await call('create', { title: 'Report', prompt: 'Write it.', cron: '0 9 * * 1', timeZone: 'America/Toronto', cwd: '/srv' })
+  const fresh = await call('create', { title: 'Report', prompt: 'Write it.', cron: '0 9 * * 1', timeZone: 'America/New_York', cwd: '/srv' })
   assert.equal(fresh.target, 'new')
   assert.equal(fresh.sessionCwd, '/srv')
 
@@ -89,7 +89,7 @@ test('create reports input problems as codes the model can act on', async () => 
 
 test('edit updates, pauses, resumes and deletes stored jobs; config jobs are read-only', async () => {
   const { call } = setup({ jobs: [{ name: 'cfg', cron: '* * * * *', command: 'true' }] })
-  const job = await call('create', { title: 'Check', prompt: 'Look.', rrule: 'DTSTART;TZID=America/Toronto:20261109T100000\nRRULE:FREQ=WEEKLY;BYDAY=MO' })
+  const job = await call('create', { title: 'Check', prompt: 'Look.', rrule: 'DTSTART;TZID=America/New_York:20261109T100000\nRRULE:FREQ=WEEKLY;BYDAY=MO' })
   const updated = await call('edit', { id: job.id, action: 'update', title: 'Check again', command: './probe' })
   assert.equal(updated.title, 'Check again')
   assert.equal(updated.kind, 'gate')
@@ -153,7 +153,7 @@ test('in Cordis, the tools reach the scheduler through the cronJobs service', as
 test('create and edit set, change and clear a job\'s model; list and view show it', async () => {
   const { call } = setup()
   const model = { provider: 'anthropic', model: 'claude-sonnet-4-5', reasoningEffort: 'high' }
-  const job = await call('create', { title: 'Report', prompt: 'Write it.', cron: '0 9 * * 1', timeZone: 'America/Toronto', model })
+  const job = await call('create', { title: 'Report', prompt: 'Write it.', cron: '0 9 * * 1', timeZone: 'America/New_York', model })
   assert.deepEqual(job.model, model)
   assert.deepEqual((await call('view', { id: job.id })).model, model)
   assert.deepEqual((await call('list', {})).jobs[0].model, model)
@@ -180,10 +180,10 @@ test('create and edit take on and once; list shows them', async () => {
   assert.match((await call('create', { title: 'x', prompt: 'y', on: 'dsh.started' })).message, /on must be an array/)
   assert.match((await call('create', { title: 'x', prompt: 'y', on: [1] })).message, /only strings/)
   assert.equal((await call('create', { title: 'x', prompt: 'y', on: ['bad pattern'] })).code, 'invalid_job')
-  const edited = await call('edit', { id: job.id, action: 'update', on: ['dsh.started', 'ci.*'], once: false, cron: '0 */2 * * *', timeZone: 'America/Toronto' })
+  const edited = await call('edit', { id: job.id, action: 'update', on: ['dsh.started', 'ci.*'], once: false, cron: '0 */2 * * *', timeZone: 'America/New_York' })
   assert.deepEqual(edited.on, ['dsh.started', 'ci.*'])
   assert.equal(edited.once, undefined)
-  assert.equal(edited.schedule, 'cron 0 */2 * * * (America/Toronto)')
+  assert.equal(edited.schedule, 'cron 0 */2 * * * (America/New_York)')
   const cleared = await call('edit', { id: job.id, action: 'update', cron: '' })
   assert.equal(cleared.schedule, null)
   const listed = (await call('list', {})).jobs.find(j => j.id === job.id)
@@ -207,7 +207,7 @@ test('the watch tool creates, lists and deletes stored watchers', async () => {
 
 test('edit prompt_replace and command_replace change text in place, all or nothing', async () => {
   const { call } = setup({ jobs: [{ name: 'cfg', cron: '* * * * *', command: 'true' }] })
-  const job = await call('create', { title: 'Replace', prompt: 'Check the mail. Then check the mail again. Cost: $5.', command: 'probe --a --b', cron: '0 9 * * *', timeZone: 'America/Toronto' })
+  const job = await call('create', { title: 'Replace', prompt: 'Check the mail. Then check the mail again. Cost: $5.', command: 'probe --a --b', cron: '0 9 * * *', timeZone: 'America/New_York' })
   const view = async () => call('view', { id: job.id })
 
   const first = await call('edit', { id: job.id, action: 'update', prompt_replace: [
@@ -240,7 +240,7 @@ test('edit prompt_replace and command_replace change text in place, all or nothi
   assert.equal((await call('edit', { id: job.id, action: 'update', prompt_replace: [{ old: 'a' }] })).code, 'invalid_arguments')
   assert.equal((await call('edit', { id: job.id, action: 'update', prompt_replace: ['a'] })).code, 'invalid_arguments')
   assert.equal((await call('edit', { id: job.id, action: 'update', prompt_replace: [] })).code, 'invalid_arguments')
-  const bare = await call('create', { title: 'Bare', command: 'true', cron: '0 9 * * *', timeZone: 'America/Toronto' })
+  const bare = await call('create', { title: 'Bare', command: 'true', cron: '0 9 * * *', timeZone: 'America/New_York' })
   assert.match((await call('edit', { id: bare.id, action: 'update', prompt_replace: [{ old: 'a', new: 'b' }] })).message, /no prompt to change/)
   assert.equal((await call('edit', { id: 'cfg', action: 'update', prompt_replace: [{ old: 'a', new: 'b' }] })).code, 'read_only')
   assert.equal((await call('edit', { id: 'nope', action: 'update', command_replace: [{ old: 'a', new: 'b' }] })).code, 'not_found')

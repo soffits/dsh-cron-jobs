@@ -199,7 +199,7 @@ test('the page channel serves only the owner and maps controller answers', async
 
 test('config cron jobs run on CronTimer by default', async () => {
   const controller = new CronJobs({
-    jobs: [{ name: 'a', cron: '23 * * * *', timeZone: 'America/Toronto', command: 'true' }],
+    jobs: [{ name: 'a', cron: '23 * * * *', timeZone: 'America/New_York', command: 'true' }],
     logger: quiet, run: async () => okResult, wake: async () => '', watchdogMs: 0,
   }).start()
   try {
@@ -246,7 +246,7 @@ test('a lost CronTimer tick runs once through the watchdog, never twice', async 
   let clock = new Date('2026-11-08T19:22:00Z')
   let runs = 0
   const controller = new CronJobs({
-    jobs: [{ name: 'a', cron: '23 * * * *', timeZone: 'America/Toronto', command: 'true' }],
+    jobs: [{ name: 'a', cron: '23 * * * *', timeZone: 'America/New_York', command: 'true' }],
     logger: quiet, run: async () => { runs++; return okResult }, wake: async () => '', now: () => clock, watchdogMs: 0,
   }).start()
   try {
