@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.22.2
+
+- Fixed: a woken job whose turn failed went quiet. A turn that ends in an error (a provider error, say) or whose answer can't be read is now a problem note of kind `turn-failed`, like a failed wake or command: emitted on `problems.channel` with the job, the session id and the error text, and sent to `problems.deliver` or the job's target (it used to be recorded as a silent or failed delivery and nothing else). A turn a person stopped, a normal end, a `[SILENT]` answer and a turn a restart cut off (it runs again) raise no note.
+
 ## 0.22.1
 
 - A job's answer that ends in `[SILENT]` after some text ("Nothing new today. [SILENT]") sends no text; it used to be delivered with the marker in it. The answer and the silent marker now follow the rule of the Telegram and Matrix bridges (`@soffits/dsh-channel-core`), so the text a model wrote between tool calls is never delivered as a job's answer either.

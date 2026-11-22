@@ -173,7 +173,7 @@ Each run's delivery shows on the Cron tasks page and in the run log: not sent ye
 
 ### Problem notes
 
-Failure notes (a command or gate that failed, a wake or rerun that failed, a watcher that is down or works again) go to the same place as the job's results unless the row says otherwise. That is the right default when whoever reads results also fixes the jobs. When the results go to someone who should not get raw failures, such as a person reading an agent's reports, the row's `problems` setting sends them elsewhere:
+Failure notes (a command or gate that failed, a wake or rerun that failed, a woken agent whose turn ended in an error or whose answer could not be read, a watcher that is down or works again) go to the same place as the job's results unless the row says otherwise. That is the right default when whoever reads results also fixes the jobs. When the results go to someone who should not get raw failures, such as a person reading an agent's reports, the row's `problems` setting sends them elsewhere:
 
 ```yaml
 - id: cron-jobs
@@ -189,14 +189,16 @@ Failure notes (a command or gate that failed, a wake or rerun that failed, a wat
           prompt: A scheduled job or watcher failed; the note is below. Find the cause and fix it. Tell the owner only what needs them.
 ```
 
-- `channel`: each note becomes an event with the note as its text and details as data: `kind` (`command-failed`, `gate-failed`, `wake-failed`, `rerun-failed`, `watcher-down`, `watcher-up`), `job` and `jobId` (or `watcher` and its `channel`), `trigger`, `startedAt`, `error`, `exitCode`, `sessionId` when known, and `text`. Events batch and are capped like any others. A run that this channel started never emits a note on it, so a failing handler can't feed itself.
+- `channel`: each note becomes an event with the note as its text and details as data: `kind` (`command-failed`, `gate-failed`, `wake-failed`, `rerun-failed`, `turn-failed`, `watcher-down`, `watcher-up`), `job` and `jobId` (or `watcher` and its `channel`), `trigger`, `startedAt`, `error`, `exitCode`, `sessionId` when known, and `text`. Events batch and are capped like any others. A run that this channel started never emits a note on it, so a failing handler can't feed itself.
 - `deliver`: a target sends every note there instead (a log topic, an ops chat), with or without `channel`. `false` sends nothing, but only when a job listening on `channel` took the event; a note no job took (no channel, nobody listening, or the handler's own failure) still goes to the job's target, so a broken job never goes quiet.
+
+A turn a person stopped, a normal end, a `[SILENT]` answer and a turn a restart cut off (it runs again) raise no note. A failed turn's note carries the job, the session id and the error text (`error`).
 
 Ordinary results are not affected. Both are off by default.
 
 ### Runs cut off by a restart
 
-A woken turn that a DSH restart cuts off before it finishes is run again once. A turn a person stopped, or one that failed, is not. Finding the cut turns is left to [dsh-restart-resume](https://github.com/soffits/dsh-restart-resume) (0.4.0 or later), which reads every cut turn from DSH's log after a restart and hands the ones a job started back to this plugin; without it, a cut-off run is recorded but not run again. The cut-off turn delivers nothing; when it is handed back, the plugin sends a short follow-up into the same session saying the earlier turn was cut off and asking the agent to finish the job without repeating what is done. The session already holds the job's prompt, command output and events, and whatever the cut-off turn did. The rerun's answer is delivered like any other.
+A woken turn that a DSH restart cuts off before it finishes is run again once. A turn a person stopped is not, and one that failed is a [problem note](#problem-notes), not a rerun. Finding the cut turns is left to [dsh-restart-resume](https://github.com/soffits/dsh-restart-resume) (0.4.0 or later), which reads every cut turn from DSH's log after a restart and hands the ones a job started back to this plugin; without it, a cut-off run is recorded but not run again. The cut-off turn delivers nothing; when it is handed back, the plugin sends a short follow-up into the same session saying the earlier turn was cut off and asking the agent to finish the job without repeating what is done. The session already holds the job's prompt, command output and events, and whatever the cut-off turn did. The rerun's answer is delivered like any other.
 
 The rerun is skipped, with the reason in the run history and a `rerun-skipped` run-log line, when the cut-off run started more than 2 hours ago, a later run of the job has woken the agent since, the job's next run is less than 15 minutes away, or the job is paused, disabled or deleted. A session the job opened for itself that a person has since taken over is left alone: the rerun fails with a note to the delivery target. A rerun that is cut off too is not run again. The run log marks the cut-off with a `cut-off` line, and the rerun's `start` line carries `rerunOf`.
 

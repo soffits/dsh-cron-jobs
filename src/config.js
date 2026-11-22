@@ -60,7 +60,7 @@ const Events = z.object({
 })
 
 const Problems = z.object({
-  channel: z.string().description('Also emit every problem note (a failed command or gate, a failed wake or rerun, a watcher down or back) as an event on this channel, such as cron.problem, so a job with on: [cron.problem] can handle it. A run this channel started never emits one. Empty: no event.'),
+  channel: z.string().description('Also emit every problem note (a failed command or gate, a failed wake or rerun, a woken turn that ended in an error or whose answer could not be read, a watcher down or back) as an event on this channel, such as cron.problem, so a job with on: [cron.problem] can handle it. A run this channel started never emits one. Empty: no event.'),
   deliver: z.union([z.const(false), DeliveryTarget]).description('Where problem notes are sent instead of the job\'s own target (or, for watchers, the plugin\'s deliver). false sends none when a job took the event on channel; a note no job took still goes to the job\'s target. Unset: the job\'s target, as before.'),
 }).description('Where notes about failures go, so they can reach whoever fixes them rather than every job\'s audience.')
 

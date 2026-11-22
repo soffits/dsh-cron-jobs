@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { decideWake } from './wake.js'
-import { commandResultText, cutOff, deliveryTarget, describeTarget, messageFromText, resolveDelivery } from './deliver.js'
+import { commandResultText, cutOff, deliveryTarget, describeTarget, messageFromText, resolveDelivery, turnFailure } from './deliver.js'
 import { buildAgentPrompt, buildRerunPrompt, formatLocalTime, sessionTitle } from './prompt.js'
 import { HISTORY_TAIL_CHARS } from './history.js'
 import { batchSummary, eventInput } from './events.js'
@@ -300,14 +300,15 @@ export class JobRunner {
   }
 
   /**
-   * Where a problem note (a failed command or gate, a failed wake or rerun)
+   * Where a problem note (a failed command or gate, a failed wake or rerun,
+   * a woken turn that failed)
    * goes, after handing it to the problems channel. Without a `problems`
    * setting, the job's own target. `problems.deliver` set to a target sends
    * it there instead; set to false sends nothing, but only when a job took
    * the event, so a problem nobody handles still reaches the job's target.
    */
-  problemTarget(kind, text, outcome, result) {
-    const { job, current } = this
+  problemTarget(kind, text, outcome, result, current = this.current) {
+    const { job } = this
     const handled = this.reportProblem?.({
       kind,
       job: job.name,
@@ -393,11 +394,12 @@ export class JobRunner {
       const reason = 'error' in answer ? 'error' : answer.reason
       await this.history.update(jobKey(job), runId, { turn: { status: cut ? 'cut-off' : 'ended', messageId, ...(reason ? { reason } : {}) } })
       let delivery
-      if (pending === undefined) {
+      const failure = turnFailure(answer)
+      if (failure !== undefined) {
+        logger.warn('[%s] the turn in session %s failed: %s', job.name, sessionId, failure)
+        delivery = await this.deliverTurnFailure(sessionId, runId, failure, pending)
+      } else if (pending === undefined) {
         delivery = undefined
-      } else if ('error' in answer) {
-        delivery = { status: 'failed', via: pending.via, to: pending.to ?? '', at: this.now().toISOString(), error: answer.error }
-        logger.warn('[%s] no answer to deliver from session %s: %s', job.name, sessionId, answer.error)
       } else {
         const message = cut ? undefined : messageFromText(answer.text, agentSettings(job, this.defaults).cwd)
         if (message === undefined) {
@@ -412,11 +414,34 @@ export class JobRunner {
       return delivery
     }
     if (pending === undefined) {
-      return this.background(work().catch((error) => {
+      return this.background(work().then(async (delivery) => {
+        // Only a failure note has a delivery to save when the job delivers nothing itself.
+        if (delivery === undefined) return
+        await this.history.update(jobKey(job), runId, { delivery })
+        await this.logDelivery(sessionId, delivery, delivery)
+      }).catch((error) => {
         logger.warn('[%s] turn in session %s not watched: %s', job.name, sessionId, describeError(error))
       }))
     }
     return this.background(this.deliveryWork(sessionId, runId, pending, work))
+  }
+
+  /**
+   * A woken turn failed (ended in an error, or its answer could not be read):
+   * a problem note like a failed wake, emitted on the problems channel and
+   * sent where problem notes go. Resolves the run's delivery record, or
+   * undefined when the note is still waiting for its channel (kept for the
+   * next start, see sendPending).
+   */
+  async deliverTurnFailure(sessionId, runId, failure, pending) {
+    const { job } = this
+    const run = this.history.runs(jobKey(job)).find(saved => saved.id === runId)
+    const text = `⚠️ ${job.name}: its turn in session ${sessionId} failed: ${failure}`
+    const target = this.problemTarget('turn-failed', text, { sessionId, error: failure }, undefined, run)
+    if (target === undefined) {
+      return pending === undefined ? undefined : { status: 'silent', via: pending.via, to: pending.to ?? '', at: this.now().toISOString(), error: failure }
+    }
+    return this.sendPending(sessionId, runId, { ...pending, status: 'pending', via: target.via, to: target.to }, { text, files: [] })
   }
 
   /** Run a delivery, then save and log its outcome; undefined from `work` means it stays pending. */
