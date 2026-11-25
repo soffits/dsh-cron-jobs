@@ -1,6 +1,6 @@
 import { homedir } from 'node:os'
 import { isAbsolute, resolve } from 'node:path'
-import { cutSilent, messageAnswer } from '@soffits/dsh-channel-core'
+import { cutSilent, messageAnswer } from '@soffits/dsh-plugin-sdk/channel'
 
 /**
  * Result delivery: after a run, a job's result can be handed to another
