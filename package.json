@@ -1,6 +1,6 @@
 {
   "name": "@soffits/dsh-cron-jobs",
-  "version": "0.22.2",
+  "version": "0.22.3",
   "description": "Cron jobs for DeepSeek Harness: run shell commands or agent prompts on a schedule, and wake an agent only when a gate asks for it",
   "type": "module",
   "main": "./index.js",
@@ -54,7 +54,7 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-util-time": "0.2.2-rc.1",
-    "@soffits/dsh-channel-core": "^0.2.0",
+    "@soffits/dsh-plugin-sdk": "^0.1.0",
     "croner": "^11.0.0",
     "zod": "^4.6.7"
   },
