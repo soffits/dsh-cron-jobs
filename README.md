@@ -12,6 +12,10 @@ A job's result can be **delivered**: the woken agent's final answer, or a comman
 
 Jobs run on cron expressions, RFC 5545 RRULE schedules, or once at a given time, and they can also run on **events** instead of polling: any script, hook or CLI can emit one with `dsh-cron-event <channel>`, and the plugin can keep long-running **watchers** (a mailbox push stream, a notification feed) whose output lines are events (see [Events](#events)). Jobs come from the plugin config, or an agent creates them from a conversation with the plugin's tools ("remind me here tomorrow at 9", "check this every Monday until January"). A **Cron tasks** page in the Web GUI shows every job and its recent runs, and lets you run a job now, pause it, or delete one an agent created.
 
+![The Cron tasks page showing a gated job's runs: four scheduled runs, each "Nothing to do", with the first run's output `{"wakeAgent": false}` expanded](docs/gated-job-runs.png)
+
+A gated job's run history on the Cron tasks page: the gate ran every minute and printed `{"wakeAgent": false}`, so no agent was woken.
+
 ## Install
 
 Install it into the `web` profile from npm:
